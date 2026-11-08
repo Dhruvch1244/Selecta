@@ -3,3 +3,5 @@ export { Deck, EQ_KILL_DB, type Band, type DeckId, type LoadedTrack } from "./de
 export * from "./grid";
 export * from "./meter";
 export { computeWaveform, type Waveform } from "./waveform";
+export { Conductor, type ConductorEvent, type ConductorHost } from "./conductor";
+export { scheduleTransition, KILL_DB, type Move, type TransitionSchedule } from "./schedule";

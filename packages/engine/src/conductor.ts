@@ -1,0 +1,207 @@
+// Performs a set plan on the two decks.
+//
+// Bar-driven, not wall-clock-driven: every tick it asks the playing deck
+// "when is bar N?" and schedules what falls inside the lookahead, so the
+// script follows whatever the deck actually does (a manual seek, a later
+// PR's loop roll). Track audio is fetched through an injected `loadTrack`,
+// so this package never touches Tauri or the network itself.
+
+import type { SetPlan, SetTrack } from "@selecta/protocol";
+import type { Deck, DeckId, LoadedTrack } from "./deck";
+import type { Engine } from "./engine";
+import { matchRate, posOfBar } from "./grid";
+import { scheduleTransition, type TransitionSchedule } from "./schedule";
+
+const LOOKAHEAD = 1.2; // seconds: enough to schedule a transition sample-accurately
+const TICK_MS = 40;
+
+export type ConductorEvent =
+  | { type: "track"; index: number; deck: DeckId }
+  | { type: "transition"; index: number; deck: DeckId; kind: string; rate: number }
+  | { type: "postponed"; index: number }
+  | { type: "end" }
+  | { type: "error"; message: string };
+
+export interface ConductorHost {
+  loadTrack: (t: SetTrack) => Promise<LoadedTrack>;
+  onEvent?: (e: ConductorEvent) => void;
+}
+
+interface Pending {
+  out: Deck;
+  inn: Deck;
+  index: number;
+  sched: TransitionSchedule;
+  handedOver: boolean;
+}
+
+export class Conductor {
+  plan: SetPlan | null = null;
+  index = 0;
+  private live: Deck | null = null;
+  private loaded = new Map<number, Promise<LoadedTrack>>();
+  private pending: Pending | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private ending = false;
+
+  constructor(
+    private readonly engine: Engine,
+    private readonly host: ConductorHost,
+  ) {}
+
+  get running(): boolean {
+    return this.timer !== null;
+  }
+  /** The deck the audience is hearing as "the" track (switches at the handover point). */
+  get leadDeck(): Deck | null {
+    return this.pending?.handedOver ? this.pending.inn : this.live;
+  }
+
+  async start(plan: SetPlan): Promise<void> {
+    this.stop();
+    if (!plan.tracks.length) throw new Error("This set has no tracks.");
+    await this.engine.resume();
+    this.plan = plan;
+    this.index = 0;
+    this.loaded.clear();
+    this.ending = false;
+    const first = plan.tracks[0]!;
+    const deck = this.engine.decks.A;
+    const track = await this.prepare(0);
+    this.engine.decks.B.stop();
+    deck.load(track);
+    deck.resetMix();
+    deck.setRate(first.rate);
+    const t = this.engine.ctx.currentTime + 0.15;
+    deck.fader.gain.setValueAtTime(0, t);
+    deck.fader.gain.linearRampToValueAtTime(1, t + 1.5);
+    deck.play(t, posOfBar(deck.grid!, first.inBar));
+    this.live = deck;
+    this.host.onEvent?.({ type: "track", index: 0, deck: deck.id });
+    void this.prepare(1);
+    this.timer = setInterval(() => this.tick(), TICK_MS);
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.pending = null;
+    for (const d of Object.values(this.engine.decks)) d.stop();
+  }
+
+  /** Jump to the next track now: an echo-out on the next bar. */
+  async skip(): Promise<void> {
+    const plan = this.plan;
+    const live = this.live;
+    if (!plan || !live || this.pending || this.index + 1 >= plan.tracks.length) return;
+    await this.prepare(this.index + 1);
+    const b = Math.ceil(live.bar() + 0.3);
+    const cur = plan.tracks[this.index]!;
+    const next = plan.tracks[this.index + 1]!;
+    cur.outBar = b + 1;
+    next.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25 };
+  }
+
+  private prepare(i: number): Promise<LoadedTrack> {
+    const t = this.plan?.tracks[i];
+    if (!t) return Promise.reject(new Error("no such track"));
+    let p = this.loaded.get(i);
+    if (!p) {
+      p = this.host.loadTrack(t);
+      p.catch((e) => this.host.onEvent?.({ type: "error", message: `Couldn't load ${t.title}: ${e instanceof Error ? e.message : e}` }));
+      this.loaded.set(i, p);
+    }
+    return p;
+  }
+
+  private tick(): void {
+    const plan = this.plan;
+    const live = this.live;
+    if (!plan || !live?.track) return;
+    const now = this.engine.ctx.currentTime;
+
+    if (this.pending) {
+      const p = this.pending;
+      if (!p.handedOver && now >= p.sched.handoverAt) {
+        p.handedOver = true;
+        this.host.onEvent?.({ type: "track", index: p.index, deck: p.inn.id });
+      }
+      if (now >= p.sched.outEndsAt + 0.1) {
+        p.out.stop();
+        this.live = p.inn;
+        this.index = p.index;
+        this.pending = null;
+        this.loaded.delete(p.index - 1);
+        void this.prepare(this.index + 1).catch(() => {});
+      }
+      return;
+    }
+
+    const cur = plan.tracks[this.index]!;
+    const next = plan.tracks[this.index + 1];
+    if (!next) {
+      if (!this.ending && live.timeOfBar(cur.outBar) - now < LOOKAHEAD) this.finish(live, cur);
+      return;
+    }
+    const tFrom = live.timeOfBar(next.trans.fromBar);
+    if (tFrom - now > LOOKAHEAD) return;
+    const ready = this.loaded.get(this.index + 1);
+    void ready?.then((track) => {
+      if (this.pending || this.plan !== plan || this.live !== live || plan.tracks[this.index + 1] !== next) return;
+      this.transition(live, track, this.index + 1);
+    });
+    // Not decoded in time: give the current track another phrase rather than cut early.
+    if (tFrom - now < 0.25) {
+      for (const k of ["fromBar", "enterAt"] as const) next.trans[k] += 8;
+      if (next.trans.swapAt !== null) next.trans.swapAt += 8;
+      cur.outBar += 8;
+      this.host.onEvent?.({ type: "postponed", index: this.index + 1 });
+    }
+  }
+
+  private transition(out: Deck, track: LoadedTrack, index: number): void {
+    const plan = this.plan!;
+    const next = plan.tracks[index]!;
+    const inn = out === this.engine.decks.A ? this.engine.decks.B : this.engine.decks.A;
+    let trans = next.trans;
+    const beatmatched = ["blend", "bassswap", "double_drop", "filter"].includes(trans.kind);
+    let rate = 1;
+    if (beatmatched) {
+      // Recomputed live from what the outgoing deck is really doing; beyond
+      // +-10% (no keylock yet) the pitch shift is ugly, so cut instead.
+      const r = matchRate(out.bpm, track.analysis.bpm, 0.1);
+      if (r === null) {
+        const end = trans.fromBar + Math.max(1, trans.len);
+        trans = { ...trans, kind: "echo_out", fromBar: end - 1, len: 1, enterAt: end, echoDiv: 0.25 };
+      } else rate = r;
+    }
+    const sched = scheduleTransition(trans, (b) => out.timeOfBar(b), (4 * out.grid!.beat) / out.rate);
+    inn.load(track);
+    inn.resetMix();
+    inn.setRate(rate);
+    out.automate(sched.moves.filter((m) => m.side === "out"));
+    inn.automate(sched.moves.filter((m) => m.side === "in"));
+    if (sched.echo) out.echo(sched.echo.at, sched.echo.until, sched.echo.delaySec);
+    inn.play(sched.startIn, posOfBar(inn.grid!, next.inBar));
+    out.stop(sched.outEndsAt + 0.05);
+    this.pending = { out, inn, index, sched, handedOver: false };
+    this.host.onEvent?.({ type: "transition", index, deck: inn.id, kind: trans.kind, rate });
+  }
+
+  private finish(deck: Deck, cur: SetTrack): void {
+    this.ending = true;
+    const end = deck.timeOfBar(cur.outBar);
+    const barSec = (4 * deck.grid!.beat) / deck.rate;
+    deck.automate([
+      { side: "out", target: "fader", at: end - 4 * barSec, value: 1 },
+      { side: "out", target: "fader", at: end - 4 * barSec, value: 0, until: end },
+    ]);
+    deck.stop(end + 0.05);
+    const ms = Math.max(0, (end - this.engine.ctx.currentTime) * 1000 + 200);
+    setTimeout(() => {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      this.host.onEvent?.({ type: "end" });
+    }, ms);
+  }
+}

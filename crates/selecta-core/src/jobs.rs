@@ -124,6 +124,21 @@ impl Scheduler {
         true
     }
 
+    /// Run `f` at `Now` priority and get its result back: for work a user is
+    /// waiting on (planning a set) that still belongs in the one scheduler.
+    /// Returns None if an identical key is already running.
+    pub fn run_now<T: Send + 'static>(
+        &self,
+        key: &str,
+        f: impl FnOnce(&CancelToken) -> T + Send + 'static,
+    ) -> Option<std::sync::mpsc::Receiver<T>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.submit(key, "interactive", Priority::Now, move |c| {
+            let _ = tx.send(f(c));
+        })
+        .then_some(rx)
+    }
+
     pub fn cancel_group(&self, group: &str) {
         let (lock, _) = &*self.state;
         let mut st = lock.lock().unwrap();

@@ -6,6 +6,7 @@ import type { Analysis } from "@selecta/protocol";
 import { type BaseLine, type GridSpec, barOfPos, nextGrid, posAt, posOfBar, timeOfPos } from "./grid";
 import { type MeterState, newMeter, stepMeter } from "./meter";
 import { computeWaveform, type Waveform } from "./waveform";
+import type { Move, Target } from "./schedule";
 
 export type DeckId = "A" | "B";
 export type Band = "low" | "mid" | "high";
@@ -39,6 +40,8 @@ export class Deck {
   private readonly filterHp: BiquadFilterNode;
   private readonly filterLp: BiquadFilterNode;
   readonly fader: GainNode;
+  private readonly echoSend: GainNode;
+  private readonly echoDelay: DelayNode;
   private readonly analyser: AnalyserNode;
   private readonly meterBuf: Float32Array<ArrayBuffer>;
 
@@ -73,6 +76,19 @@ export class Deck {
       .connect(this.fader)
       .connect(out);
     this.fader.connect(this.analyser);
+    // Echo send taps pre-fader and returns straight to the mix bus, so an
+    // echo-out tail keeps ringing after this deck's fader is cut.
+    this.echoSend = ctx.createGain();
+    this.echoSend.gain.value = 0;
+    this.echoDelay = ctx.createDelay(4);
+    const fb = ctx.createGain();
+    fb.gain.value = 0.58;
+    const tone = ctx.createBiquadFilter();
+    tone.type = "lowpass";
+    tone.frequency.value = 5000;
+    this.filterLp.connect(this.echoSend).connect(this.echoDelay);
+    this.echoDelay.connect(tone).connect(fb).connect(this.echoDelay);
+    this.echoDelay.connect(out);
   }
 
   get grid(): GridSpec | null {
@@ -180,6 +196,60 @@ export class Deck {
   setFader(v: number): void {
     // Equal-power-ish curve: a fader at 50% should sound half as loud, not silent.
     this.fader.gain.setTargetAtTime(Math.pow(v, 1.6), this.ctx.currentTime, 0.008);
+  }
+
+  /** Neutral mixer state for a freshly loaded track that a set is about to automate. */
+  resetMix(at = this.ctx.currentTime): void {
+    for (const b of ["low", "mid", "high"] as const) {
+      this.eq[b].gain.cancelScheduledValues(at);
+      this.eq[b].gain.setValueAtTime(0, at);
+    }
+    this.filterHp.frequency.cancelScheduledValues(at);
+    this.filterHp.frequency.setValueAtTime(10, at);
+    this.filterLp.frequency.cancelScheduledValues(at);
+    this.filterLp.frequency.setValueAtTime(22000, at);
+    this.fader.gain.cancelScheduledValues(at);
+    this.fader.gain.setValueAtTime(1, at);
+  }
+
+  /** Apply scheduled moves from a transition schedule (see schedule.ts). */
+  automate(moves: Move[]): void {
+    for (const m of [...moves].sort((a, b) => a.at - b.at)) {
+      const p = this.param(m.target);
+      const at = Math.max(m.at, this.ctx.currentTime);
+      if (m.until === undefined) p.setValueAtTime(m.value, at);
+      else {
+        // Anchor the ramp's start at the value in force at `at`, then ramp.
+        p.setValueAtTime(p.value, at);
+        if (m.target === "hp" || m.target === "lp") p.exponentialRampToValueAtTime(Math.max(10, m.value), Math.max(at + 0.001, m.until));
+        else p.linearRampToValueAtTime(m.value, Math.max(at + 0.001, m.until));
+      }
+    }
+  }
+
+  /** Feed the echo for [at, until] with a delay of `delaySec`; the tail decays on its own. */
+  echo(at: number, until: number, delaySec: number): void {
+    const t0 = Math.max(at, this.ctx.currentTime);
+    this.echoDelay.delayTime.setValueAtTime(Math.min(3.9, Math.max(0.02, delaySec)), t0);
+    this.echoSend.gain.setValueAtTime(0, t0);
+    this.echoSend.gain.linearRampToValueAtTime(0.9, t0 + 0.01);
+    this.echoSend.gain.setValueAtTime(0.9, Math.max(t0 + 0.01, until - 0.01));
+    this.echoSend.gain.linearRampToValueAtTime(0, until);
+  }
+
+  private param(t: Target): AudioParam {
+    switch (t) {
+      case "fader":
+        return this.fader.gain;
+      case "low":
+        return this.eq.low.gain;
+      case "high":
+        return this.eq.high.gain;
+      case "hp":
+        return this.filterHp.frequency;
+      case "lp":
+        return this.filterLp.frequency;
+    }
   }
 
   tickMeter(nowMs: number, dtMs: number): MeterState {

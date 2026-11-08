@@ -10,7 +10,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "test": "npm run test --workspaces --if-present",
-    "protocol": "cargo test -p selecta-core --quiet export_bindings",
+    "protocol": "cargo test -p selecta-core --quiet export_bindings && node packages/protocol/gen-index.mjs",
     "check": "npm run lint && npm run typecheck && npm test"
   },
   "devDependencies": {

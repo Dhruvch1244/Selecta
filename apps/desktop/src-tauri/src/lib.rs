@@ -11,8 +11,10 @@ use std::sync::{Arc, Mutex};
 
 use selecta_core::analysis::{analyze_pcm, Analysis};
 use selecta_core::decode::{decode_mono, to_analysis_rate};
+use selecta_core::intent;
 use selecta_core::jobs::{GroupProgress, Priority, Scheduler};
-use selecta_core::library::{Library, ScanReport, TrackSummary};
+use selecta_core::library::{Library, ScanReport, SetSummary, TrackSummary};
+use selecta_core::planner::{self, SetPlan};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
@@ -38,9 +40,9 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Res<T> + Send + 'static
     tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
 }
 
-fn analyse_file(path: &std::path::Path) -> Res<Analysis> {
+fn analyse_file(path: &std::path::Path, bpm_hint: Option<(f64, f64)>) -> Res<Analysis> {
     let pcm = to_analysis_rate(decode_mono(path).map_err(err)?);
-    Ok(analyze_pcm(&pcm, None))
+    Ok(analyze_pcm(&pcm, bpm_hint))
 }
 
 #[tauri::command(async)]
@@ -70,13 +72,13 @@ async fn library_scan(app: State<'_, App>) -> Res<ScanReport> {
     let (lib, jobs) = (app.lib.clone(), app.jobs.clone());
     blocking(move || {
         let rep = lib.scan(&dirs).map_err(err)?;
-        for (id, path, _genre) in lib.needs_analysis().map_err(err)? {
+        for (id, path, hint) in lib.needs_analysis().map_err(err)? {
             let lib = lib.clone();
             jobs.submit(&format!("analyse:{id}"), "analysis", Priority::Idle, move |cancel| {
                 if cancel.is_cancelled() {
                     return;
                 }
-                if let Ok(a) = analyse_file(&path) {
+                if let Ok(a) = analyse_file(&path, hint) {
                     let _ = lib.save_analysis(&id, &a);
                 }
             });
@@ -96,11 +98,71 @@ async fn track_analysis(app: State<'_, App>, id: String) -> Res<Analysis> {
             return Ok(a);
         }
         let path = lib.path_of(&id).map_err(err)?.ok_or("unknown track")?;
-        let a = analyse_file(&path)?;
+        let a = analyse_file(&path, None)?;
         lib.save_analysis(&id, &a).map_err(err)?;
         Ok(a)
     })
     .await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PlanOptions {
+    duration_min: Option<f64>,
+    chaos: Option<f64>,
+    seed: Option<u64>,
+}
+
+/// Prompt -> saved set plan. Runs through the scheduler at `Now` priority
+/// (pillar 2), and only over tracks already analysed; anything still in the
+/// analysis queue is mentioned in the plan's notes rather than waited on.
+#[tauri::command(async)]
+async fn plan_set(app: State<'_, App>, prompt: String, options: Option<PlanOptions>) -> Res<SetPlan> {
+    let (lib, jobs) = (app.lib.clone(), app.jobs.clone());
+    let o = options.unwrap_or_default();
+    let rx = jobs
+        .run_now(&format!("plan:{prompt}:{:?}", o.seed), move |_| -> Res<SetPlan> {
+            let lib_artists: Vec<String> = lib.tracks().map_err(err)?.into_iter().map(|t| t.artist).collect();
+            let mut it = intent::parse(&prompt, &lib_artists);
+            if let Some(d) = o.duration_min.filter(|d| *d > 0.0) {
+                it.duration_min = d;
+                it.duration_explicit = true;
+            }
+            if let Some(c) = o.chaos {
+                it.chaos = c.clamp(0.0, 1.0);
+            }
+            let cands = lib.candidates().map_err(err)?;
+            let seed = o.seed.unwrap_or_else(|| {
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
+            });
+            let mut plan = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![] })?;
+            let pending = lib.needs_analysis().map_err(err)?.len();
+            if pending > 0 {
+                plan.notes.push(format!("{pending} tracks are still being analysed and weren't considered yet."));
+            }
+            lib.save_set(&plan).map_err(err)?;
+            Ok(plan)
+        })
+        .ok_or("Already planning that set.")?;
+    blocking(move || rx.recv().map_err(|_| "planning was cancelled".to_string())?).await
+}
+
+#[tauri::command(async)]
+async fn sets_list(app: State<'_, App>) -> Res<Vec<SetSummary>> {
+    let lib = app.lib.clone();
+    blocking(move || lib.sets().map_err(err)).await
+}
+
+#[tauri::command(async)]
+async fn set_get(app: State<'_, App>, id: String) -> Res<SetPlan> {
+    let lib = app.lib.clone();
+    blocking(move || lib.set(&id).map_err(err)?.ok_or_else(|| "set not found".to_string())).await
+}
+
+#[tauri::command(async)]
+async fn set_delete(app: State<'_, App>, id: String) -> Res<()> {
+    let lib = app.lib.clone();
+    blocking(move || lib.delete_set(&id).map_err(err)).await
 }
 
 #[tauri::command(async)]
@@ -135,7 +197,18 @@ pub fn run() {
             app.manage(App { lib, jobs: Scheduler::new(workers), settings: Mutex::new(settings), settings_path });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![settings_get, settings_set, library_tracks, library_scan, track_analysis, jobs_progress])
+        .invoke_handler(tauri::generate_handler![
+            settings_get,
+            settings_set,
+            library_tracks,
+            library_scan,
+            track_analysis,
+            jobs_progress,
+            plan_set,
+            sets_list,
+            set_get,
+            set_delete
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Selecta");
 }

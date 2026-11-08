@@ -6,6 +6,8 @@ import { getEngine, useApp } from "@/lib/store";
 import { Browser } from "@/panels/browser";
 import { DeckLane } from "@/panels/deck-lane";
 import { Mixer } from "@/panels/mixer";
+import { SetPanel } from "@/panels/set-panel";
+import { useSet } from "@/lib/set-store";
 import { Toolbar } from "@/panels/toolbar";
 
 /**
@@ -35,6 +37,7 @@ export function App() {
       s: () => useApp.getState().cue("B"),
       z: () => useApp.getState().sync("A"),
       x: () => useApp.getState().sync("B"),
+      n: () => useSet.getState().skip(),
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -54,7 +57,8 @@ export function App() {
       <HintBar />
       <main className="grid min-h-0 flex-1 grid-cols-[minmax(240px,300px)_1fr_auto] gap-1.5 p-1.5">
         <Browser />
-        <div className="grid min-h-0 grid-rows-2 gap-1.5">
+        <div className="grid min-h-0 grid-rows-[auto_1fr_1fr] gap-1.5">
+          <SetPanel />
           <DeckLane id="A" />
           <DeckLane id="B" />
         </div>

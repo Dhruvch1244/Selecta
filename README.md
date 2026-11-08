@@ -9,12 +9,13 @@ to what is actually playing.
 Native desktop app: **Tauri 2 shell + Rust core + React UI**. Everything runs
 on your machine.
 
-> **Status: v1 foundation.** The stack, design system, CI/CD and a working
-> vertical slice (scan → analyse in Rust → two decks with sync, EQ, filter,
-> faders and meters) are in. The set planner, FX director, AI curation, stems
-> and keylock arrive as follow-up PRs: see [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** foundation plus the set planner. Describe a set and Selecta
+> picks, orders and performs it: beatmatched blends, bass swaps, double drops,
+> filter mixes, echo-outs and slams on phrase boundaries. AI curation, the FX
+> director, lyrics, Spotify, stems and keylock follow: see
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
-![Selecta: two decks synced, mixer and browser (dark)](docs/img/studio-dark.png)
+![Selecta mid-transition: a planned DnB set, deck A handing over to deck B with bar lines aligned](docs/img/set-transition.png)
 
 ## Run it
 

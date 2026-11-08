@@ -3,15 +3,18 @@
 Each item is one feature branch and one pull request. The order puts what
 makes everything after it better first.
 
-| # | PR | What lands | Why in this order |
+| # | PR | What lands | Status |
 |---|---|---|---|
-| 1 | **Foundation** (this PR) | Stack, design system, CI/CD, Rust analysis port, scheduler, two decks with sync/EQ/filter/meters | Everything else builds on it |
-| 2 | **Neural beat tracking** | Beat + downbeat model via ONNX Runtime (`ort`) in the inference lane, replacing the tempo/grid stage; grid confidence per section | Every transition and effect depends on a correct grid; live-drummer Bollywood is where the DSP grid is weakest |
-| 3 | **Stem separation** | Demucs (htdemucs ONNX) on GPU when available, CPU fallback; stems cached per track; the engine plays 4 stems per deck with per-stem gain | The biggest jump in quality: acapella intros, vocal-only throws, drum-only blends |
-| 4 | **Keylock** | WASM time-stretcher (Signalsmith Stretch, MIT) in an AudioWorklet; tempo changes without pitch changes; widens the beatmatch window from ±8% | Lets the planner mix across genres without chipmunked vocals |
-| 5 | **Set planner** | Prompt → intent → track selection → beam-search ordering (harmonic, tempo, energy arc) → phrase-aligned cue points; set timeline panel | The "describe a set" core, now on solid grids and stems |
-| 6 | **FX director** | Effects chosen by intent, not dice: a tension/release model over sections, stems and lyrics (builds into drops, vocal throws on line ends, drum-only breakdowns), with a rule for every move and a budget per phrase | Fixes the prototype's random-FX problem by design |
-| 7 | **AI curation (Claude CLI)** | Intent parsing, track vetting by real song knowledge, running order and DJ moments; library genre/mood tagging; all optional, rules work without it | Proven in the prototype, now with better inputs |
-| 8 | **Lyrics + Lyric Overlay link** | LRCLIB/local LRC, stage view synced to the real deck position, MPRIS on Linux / SMTC on Windows | Lyric-linked FX need stems + director first |
-| 9 | **Spotify** | PKCE import, local matching, store links for missing tracks, export sets as playlists | Library growth, independent of the engine |
-| 10 | **Recording & release polish** | Record the master to file, auto-updater, signed builds | Ship it |
+| 1 | **Foundation** | Stack, design system, CI/CD, Rust analysis, scheduler, two decks with sync/EQ/filter/meters | merged |
+| 2 | **Set planner** | Prompt → intent → selection → beam-search ordering (key, tempo, energy arc) → phrase-aligned cues; conductor performs blend / bass swap / double drop / filter / echo out / slam; Set panel timeline | this PR |
+| 3 | **AI curation (Claude CLI)** | Intent refinement, track vetting by real song knowledge (bangers vs ballads), running order, DJ moments, library genre/mood tagging. Optional: rules work without it | next |
+| 4 | **FX director** | Effects with intent, not dice: tension/release over sections and lyrics (builds into drops, throws on line ends, rolls, rewinds), plus an FX pad. Adds backspin / tape stop / rewind / loop-roll transitions | |
+| 5 | **Lyrics + Lyric Overlay link** | LRCLIB / local LRC, stage view synced to the real deck position, MPRIS on Linux | |
+| 6 | **Spotify** | PKCE import, local matching, store links for missing tracks, export sets as playlists | |
+| 7 | **Neural beat tracking** | Beat + downbeat model via ONNX Runtime, replacing the DSP grid stage; best on live-drummer tracks | |
+| 8 | **Stem separation** | Demucs (ONNX) on GPU/CPU, cached stems, 4 stems per deck: acapella intros, vocal-only throws, drum-only blends | |
+| 9 | **Keylock** | WASM time-stretcher in an AudioWorklet: tempo without pitch, wider beatmatch window | |
+| 10 | **Recording & release polish** | Record the master, auto-updater, signed builds | |
+
+Order changed after PR 1 at the user's request: the features you see and
+use (planner, AI, FX, lyrics) come before the deeper audio upgrades.

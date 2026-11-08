@@ -27,7 +27,7 @@ jobs:
       - run: cargo clippy -p selecta-core --all-targets -- -D warnings
       - run: cargo test -p selecta-core --release
       - name: Protocol types are in sync with Rust
-        run: git diff --exit-code -- packages/protocol/src/generated || (echo "::error::Run 'npm run protocol' and commit packages/protocol/src/generated" && exit 1)
+        run: node packages/protocol/gen-index.mjs && git diff --exit-code -- packages/protocol/src || (echo "::error::Run 'npm run protocol' and commit packages/protocol/src/generated" && exit 1)
 
   web:
     name: UI + engine (lint, types, tests, build)
