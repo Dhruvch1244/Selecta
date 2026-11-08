@@ -5,3 +5,6 @@ export * from "./meter";
 export { computeWaveform, type Waveform } from "./waveform";
 export { Conductor, type ConductorEvent, type ConductorHost } from "./conductor";
 export { scheduleTransition, KILL_DB, type Move, type TransitionSchedule } from "./schedule";
+export { selfTest, type SelfTestResult } from "./selftest";
+export { loadLimiter } from "./engine";
+export { dbToGain } from "./deck";

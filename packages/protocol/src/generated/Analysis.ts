@@ -14,4 +14,12 @@ downbeat0: number,
 /**
  * Mean onset strength on the grid / mean overall. ~1 = no grid, >2 = trustworthy.
  */
-gridConf: number, key: string, camelot: string, keyConf: number, bars: number, startBar: number, sections: Array<Section>, drops: Array<number>, breaks: Array<number>, outroBar: number, barEnergy: Array<number>, gainDb: number, centroid: number, onsetRate: number, wave: WaveOverview, };
+gridConf: number, key: string, camelot: string, keyConf: number, bars: number, startBar: number, sections: Array<Section>, drops: Array<number>, breaks: Array<number>, outroBar: number, barEnergy: Array<number>, 
+/**
+ * Playback gain to normalise loudness, capped so the track's peak stays under -1 dBFS.
+ */
+gainDb: number, 
+/**
+ * Sample peak of the decoded audio, dBFS.
+ */
+peakDb: number, centroid: number, onsetRate: number, wave: WaveOverview, };

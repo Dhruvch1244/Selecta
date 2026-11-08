@@ -8,6 +8,7 @@ import { type MeterState, newMeter, stepMeter } from "./meter";
 export class Engine {
   readonly ctx: AudioContext;
   readonly decks: Record<DeckId, Deck>;
+  readonly limiterReady: Promise<void>;
   master: MeterState = newMeter();
   private readonly mix: GainNode;
   private readonly volume: GainNode;
@@ -17,18 +18,19 @@ export class Engine {
   constructor(ctx = new AudioContext({ latencyHint: "interactive" })) {
     this.ctx = ctx;
     this.mix = ctx.createGain();
-    const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -3;
-    limiter.knee.value = 1;
-    limiter.ratio.value = 20;
-    limiter.attack.value = 0.002;
-    limiter.release.value = 0.1;
     this.volume = ctx.createGain();
     this.volume.gain.value = 0.85;
     this.analyser = ctx.createAnalyser();
     this.analyser.fftSize = 1024;
     this.buf = new Float32Array(this.analyser.fftSize);
-    this.mix.connect(limiter).connect(this.volume).connect(ctx.destination);
+    // Mix -> brickwall limiter (-1 dBFS ceiling) -> master volume. Until the
+    // worklet module has loaded (a few ms) the mix runs straight to the
+    // volume, so nothing is ever silent waiting on it.
+    this.mix.connect(this.volume).connect(ctx.destination);
+    this.limiterReady = loadLimiter(ctx).then((lim) => {
+      this.mix.disconnect(this.volume);
+      this.mix.connect(lim).connect(this.volume);
+    }).catch((e) => console.warn("limiter unavailable, running unlimited:", e));
     this.volume.connect(this.analyser);
     this.decks = { A: new Deck(ctx, "A", this.mix), B: new Deck(ctx, "B", this.mix) };
   }
@@ -36,6 +38,7 @@ export class Engine {
   /** Browsers start contexts suspended until a user gesture. */
   async resume(): Promise<void> {
     if (this.ctx.state !== "running") await this.ctx.resume();
+    await this.limiterReady;
   }
 
   decode(bytes: ArrayBuffer): Promise<AudioBuffer> {
@@ -57,4 +60,12 @@ export class Engine {
   get latencyMs(): number {
     return Math.round(((this.ctx.outputLatency || 0) + this.ctx.baseLatency) * 1000);
   }
+}
+
+/** Load the limiter worklet module and create a node (works for offline contexts too). */
+export async function loadLimiter(ctx: BaseAudioContext, ceilingDb = -1): Promise<AudioWorkletNode> {
+  await ctx.audioWorklet.addModule(new URL("./limiter-worklet.js", import.meta.url));
+  const node = new AudioWorkletNode(ctx, "selecta-limiter", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+  node.parameters.get("ceiling")!.value = ceilingDb;
+  return node;
 }

@@ -45,6 +45,7 @@ export function Browser() {
   const first = Math.max(0, Math.floor(scrollTop / ROW) - 4);
   const visible = rows.slice(first, first + Math.ceil(height / ROW) + 8);
   const analysed = tracks.filter((t) => t.analyzed).length;
+  const failed = tracks.filter((t) => t.error).length;
 
   const pickFolder = async () => {
     const dir = await open({ directory: true, multiple: false, title: "Add a music folder" });
@@ -54,7 +55,12 @@ export function Browser() {
   return (
     <Panel
       title="Browser"
-      tools={<span className="font-mono text-[10px] tabular-nums text-muted-foreground">{analysed}/{tracks.length}</span>}
+      tools={
+        <span className="font-mono text-[10px] tabular-nums text-muted-foreground" {...hintProps({ label: "Analysed tracks", value: `${analysed} of ${tracks.length}${failed ? `, ${failed} unreadable (point at the ⚠ for why)` : ""}` })}>
+          {analysed}/{tracks.length}
+          {failed > 0 && <span className="ml-1 text-destructive">⚠{failed}</span>}
+        </span>
+      }
       bodyClassName="flex flex-col"
     >
       <div className="flex gap-1 border-b border-border p-1.5">
@@ -112,7 +118,7 @@ function TrackRow({ t, top, selected, onSelect, onLoad }: { t: TrackSummary; top
           onKeyDown={(e) => {
             if (e.key === "Enter") onLoad(e.shiftKey ? "B" : "A");
           }}
-          {...hintProps({ label: `${t.artist} – ${t.title}`, value: t.analyzed ? `${t.bpm?.toFixed(1)} BPM · ${t.key} (${t.camelot})${t.mood ? ` · ${t.mood}` : ""}` : "not analysed yet", keys: "Enter → A · Shift+Enter → B" })}
+          {...hintProps({ label: `${t.artist} – ${t.title}`, value: t.error ? `Can't analyse: ${t.error}` : t.analyzed ? `${t.bpm?.toFixed(1)} BPM · ${t.key} (${t.camelot})${t.mood ? ` · ${t.mood}` : ""}` : "not analysed yet", keys: "Enter → A · Shift+Enter → B" })}
           style={{ top, height: 30 }}
           className={cn(
             "absolute inset-x-0 flex cursor-default items-center gap-2 border-b border-border/40 px-2 outline-none",
@@ -126,7 +132,11 @@ function TrackRow({ t, top, selected, onSelect, onLoad }: { t: TrackSummary; top
               {t.mood && <span className="shrink-0 rounded-[2px] bg-muted px-1 text-[9px] uppercase tracking-wide">{t.mood}</span>}
             </div>
           </div>
-          <span className="w-10 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{t.bpm ? t.bpm.toFixed(1) : "···"}</span>
+          {t.error ? (
+            <span className="w-10 text-right text-[12px] text-destructive" aria-label={`Can't analyse: ${t.error}`}>⚠</span>
+          ) : (
+            <span className="w-10 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{t.bpm ? t.bpm.toFixed(1) : "···"}</span>
+          )}
           <span className="w-7 text-right font-mono text-[11px] text-[var(--cyan)]">{t.camelot ?? ""}</span>
         </div>
       </ContextMenuTrigger>

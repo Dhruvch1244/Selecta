@@ -39,6 +39,8 @@ pub struct TrackSummary {
     pub camelot: Option<String>,
     /// AI-tagged mood (party, sad, ...), when the library has been tagged.
     pub mood: Option<String>,
+    /// Why analysis failed, if it did (shown in the browser; retried when the file changes).
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, TS, Clone, Debug)]
@@ -102,6 +104,9 @@ impl Library {
         if !cols.iter().any(|c| c == "llm_tags") {
             conn.execute("ALTER TABLE tracks ADD COLUMN llm_tags TEXT", [])?;
         }
+        if !cols.iter().any(|c| c == "analysis_error") {
+            conn.execute("ALTER TABLE tracks ADD COLUMN analysis_error TEXT", [])?;
+        }
         Ok(Library { conn: Mutex::new(conn) })
     }
 
@@ -163,7 +168,8 @@ impl Library {
         let conn = self.conn.lock().unwrap();
         let mut st = conn.prepare(
             "SELECT id, path, artist, title, album, genre_tag, duration, analysis, analysis_mtime >= mtime AND analysis_version = ?1,
-                    json_extract(llm_tags, '$.mood')
+                    json_extract(llm_tags, '$.mood'),
+                    CASE WHEN analysis_mtime >= mtime THEN analysis_error END
              FROM tracks ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE",
         )?;
         let rows = st.query_map([ANALYSIS_VERSION], |r| {
@@ -182,6 +188,7 @@ impl Library {
                 key: parsed.as_ref().and_then(|v| v["key"].as_str().map(String::from)),
                 camelot: parsed.as_ref().and_then(|v| v["camelot"].as_str().map(String::from)),
                 mood: r.get::<_, Option<String>>(9)?.filter(|m| !m.is_empty()),
+                error: r.get(10)?,
             })
         })?;
         rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
@@ -192,7 +199,9 @@ impl Library {
     pub fn needs_analysis(&self) -> Result<Vec<PendingAnalysis>> {
         let conn = self.conn.lock().unwrap();
         let mut st = conn.prepare(
-            "SELECT id, path, genre_tag, artist FROM tracks WHERE analysis IS NULL OR analysis_mtime < mtime OR analysis_version != ?1",
+            "SELECT id, path, genre_tag, artist FROM tracks
+             WHERE (analysis IS NULL OR analysis_mtime < mtime OR analysis_version != ?1)
+               AND NOT (analysis_error IS NOT NULL AND analysis_mtime >= mtime)",
         )?;
         let rows = st.query_map([ANALYSIS_VERSION], |r| {
             let (path, tag, artist): (String, String, String) = (r.get(1)?, r.get(2)?, r.get(3)?);
@@ -215,6 +224,13 @@ impl Library {
             }
         }
         Ok(out)
+    }
+
+    /// Remember a failed analysis so it isn't retried every scan, and so the UI
+    /// can say why. Changing the file (new mtime) makes it eligible again.
+    pub fn save_analysis_error(&self, id: &str, msg: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE tracks SET analysis_error=?1, analysis_mtime=mtime WHERE id=?2", params![msg, id])?;
+        Ok(())
     }
 
     pub fn tags(&self, id: &str) -> Result<Option<TrackTags>> {
@@ -274,7 +290,7 @@ impl Library {
     pub fn save_analysis(&self, id: &str, a: &Analysis) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE tracks SET analysis=?1, analysis_mtime=mtime, analysis_version=?2, duration=?3 WHERE id=?4",
+            "UPDATE tracks SET analysis=?1, analysis_mtime=mtime, analysis_version=?2, duration=?3, analysis_error=NULL WHERE id=?4",
             params![serde_json::to_string(a)?, ANALYSIS_VERSION, a.duration, id],
         )?;
         Ok(())
@@ -399,6 +415,10 @@ mod tests {
         assert_eq!(lib.tags(&id).unwrap(), Some(tags));
         assert!(lib.untagged().unwrap().is_empty());
         assert_eq!(lib.tracks().unwrap()[0].mood.as_deref(), Some("uplifting"));
+        assert_eq!(lib.needs_analysis().unwrap().len(), 1);
+        lib.save_analysis_error(&id, "no audio decoded").unwrap();
+        assert_eq!(lib.tracks().unwrap()[0].error.as_deref(), Some("no audio decoded"));
+        assert!(lib.needs_analysis().unwrap().is_empty(), "a failed file isn't retried until it changes");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

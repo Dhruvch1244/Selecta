@@ -96,8 +96,13 @@ async fn library_scan(app: State<'_, App>) -> Res<ScanReport> {
                 if cancel.is_cancelled() {
                     return;
                 }
-                if let Ok(a) = analyse_file(&path, hint) {
-                    let _ = lib.save_analysis(&id, &a);
+                match analyse_file(&path, hint) {
+                    Ok(a) => {
+                        let _ = lib.save_analysis(&id, &a);
+                    }
+                    Err(e) => {
+                        let _ = lib.save_analysis_error(&id, &e);
+                    }
                 }
             });
         }

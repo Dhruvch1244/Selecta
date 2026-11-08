@@ -20,13 +20,49 @@ use symphonia::core::meta::MetadataOptions;
 
 use crate::Error;
 
+#[derive(Debug)]
 pub struct Pcm {
     pub samples: Vec<f32>,
     pub rate: u32,
 }
 
-/// Decode to mono at the file's native rate.
+/// Decode to mono. symphonia first (pure Rust, no process spawn); for codecs
+/// it doesn't implement (Opus above all: ~70% of a real test library was
+/// .opus, and every one failed silently before this fallback) ffmpeg decodes
+/// instead. If both fail, the error says why, so the UI can show it.
 pub fn decode_mono(path: &Path) -> Result<Pcm, Error> {
+    match decode_symphonia(path) {
+        Ok(p) => Ok(p),
+        Err(first) => decode_ffmpeg(path).map_err(|second| Error::Decode(format!("{first}; ffmpeg fallback: {second}"))),
+    }
+}
+
+/// Mono f32 at 24 kHz straight from ffmpeg (`-vn` skips embedded cover art).
+fn decode_ffmpeg(path: &Path) -> Result<Pcm, String> {
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-vn", "-ac", "1", "-ar", "24000", "-f", "f32le", "-"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "ffmpeg isn't installed (needed for Opus and other formats symphonia can't decode)".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("ffmpeg failed").chars().take(200).collect());
+    }
+    let samples: Vec<f32> = out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+    if samples.is_empty() {
+        return Err("no audio in file".into());
+    }
+    Ok(Pcm { samples, rate: 24_000 })
+}
+
+fn decode_symphonia(path: &Path) -> Result<Pcm, Error> {
     let file = File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
@@ -115,6 +151,35 @@ fn halfband_decimate(x: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opus_decodes_via_ffmpeg_fallback() {
+        let dir = std::env::temp_dir().join(format!("selecta-opus-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("tone.opus");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-c:a", "libopus"])
+            .arg(&f)
+            .status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("skipping: ffmpeg with libopus not available");
+            return;
+        }
+        assert!(decode_symphonia(&f).is_err(), "symphonia can't do Opus; if this starts passing the fallback may be removable");
+        let pcm = decode_mono(&f).expect("ffmpeg fallback decodes opus");
+        let secs = pcm.samples.len() as f64 / pcm.rate as f64;
+        assert!((secs - 2.0).abs() < 0.1, "decoded {secs}s");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_file_reports_both_reasons() {
+        let f = std::env::temp_dir().join(format!("selecta-junk-{}.mp3", std::process::id()));
+        std::fs::write(&f, b"definitely not audio").unwrap();
+        let e = decode_mono(&f).unwrap_err().to_string();
+        assert!(e.contains("ffmpeg"), "{e}");
+        std::fs::remove_file(&f).unwrap();
+    }
 
     #[test]
     fn decimation_keeps_low_tones_and_kills_high_ones() {

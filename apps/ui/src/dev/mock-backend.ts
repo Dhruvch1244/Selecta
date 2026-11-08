@@ -20,7 +20,7 @@ export async function installMockBackend(): Promise<void> {
     const [artist, title] = file.replace(/\.[^.]+$/, "").split(" - ");
     const id = `mock${i}`;
     byId.set(id, f);
-    return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot, mood: null };
+    return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot, mood: null, error: null };
   });
   // plan.json comes from `--example plan`; re-key its tracks to the mock ids/paths.
   const rawPlan: { plan: SetPlan } | null = await fetch("/__fixtures__/plan.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
