@@ -1,10 +1,11 @@
 // Dev-only stand-in for the Rust shell, so the UI can be built and checked
 // in a plain browser: `npm run dev:ui`, then open http://localhost:1420/?mock.
-// Fixtures live in apps/ui/public/__fixtures__/ (gitignored audio), made by:
+// Fixtures live in apps/ui/dev-fixtures/ (gitignored audio, served at /__fixtures__ by a dev-only
+// Vite middleware, never bundled), made by:
 //   cargo run --release -p selecta-core --example analyze -- *.mp3 > library.json
 // Never bundled: main.tsx only imports this when import.meta.env.DEV is true.
 
-import type { Analysis, TrackSummary } from "@selecta/protocol";
+import type { Analysis, SetPlan, TrackSummary } from "@selecta/protocol";
 
 interface Fixture {
   path: string;
@@ -21,6 +22,16 @@ export async function installMockBackend(): Promise<void> {
     byId.set(id, f);
     return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot };
   });
+  // plan.json comes from `--example plan`; re-key its tracks to the mock ids/paths.
+  const rawPlan: { plan: SetPlan } | null = await fetch("/__fixtures__/plan.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const plan = rawPlan?.plan ?? null;
+  if (plan) {
+    for (const t of plan.tracks) {
+      const file = t.path.split("/").pop();
+      const m = tracks.find((x) => x.path.endsWith(`/${file}`));
+      if (m) Object.assign(t, { id: m.id, path: m.path });
+    }
+  }
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     settings_get: () => ({ musicDirs: ["/__fixtures__"] }),
     settings_set: () => null,
@@ -28,6 +39,13 @@ export async function installMockBackend(): Promise<void> {
     library_scan: () => ({ found: tracks.length, added: 0, updated: 0, removed: 0 }),
     track_analysis: (a) => byId.get(String(a.id))?.analysis,
     jobs_progress: () => [],
+    plan_set: (a) => {
+      if (!plan) throw new Error("mock backend: no plan.json fixture");
+      return { ...structuredClone(plan), prompt: String(a.prompt), id: `mock-${Date.now()}` };
+    },
+    sets_list: () => (plan ? [{ id: plan.id, created: plan.created, title: plan.title, prompt: plan.prompt, tracks: plan.tracks.length }] : []),
+    set_get: () => plan,
+    set_delete: () => null,
   };
   Object.assign(window, {
     __TAURI_INTERNALS__: {

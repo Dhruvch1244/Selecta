@@ -22,4 +22,4 @@ models/
 !.vscode/extensions.json
 
 # Dev fixtures for the UI mock backend (generated, may contain audio)
-apps/ui/public/__fixtures__/
+apps/ui/dev-fixtures/

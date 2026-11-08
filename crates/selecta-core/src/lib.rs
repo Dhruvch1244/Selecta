@@ -5,8 +5,11 @@
 
 pub mod analysis;
 pub mod decode;
+pub mod genres;
+pub mod intent;
 pub mod jobs;
 pub mod library;
+pub mod planner;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

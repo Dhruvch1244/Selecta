@@ -15,6 +15,8 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::analysis::{Analysis, ANALYSIS_VERSION};
+use crate::genres;
+use crate::planner::{Candidate, SetPlan};
 use crate::Result;
 
 const AUDIO_EXTS: [&str; 10] = ["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav", "aiff", "aif", "alac"];
@@ -36,6 +38,17 @@ pub struct TrackSummary {
     pub camelot: Option<String>,
 }
 
+#[derive(Serialize, TS, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetSummary {
+    pub id: String,
+    pub created: f64,
+    pub title: String,
+    pub prompt: String,
+    pub tracks: u32,
+}
+
 #[derive(Serialize, TS, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -45,6 +58,9 @@ pub struct ScanReport {
     pub updated: u32,
     pub removed: u32,
 }
+
+/// (track id, file path, BPM range hint for octave folding).
+pub type PendingAnalysis = (String, PathBuf, Option<(f64, f64)>);
 
 pub fn track_id(path: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -72,6 +88,9 @@ impl Library {
                artist TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', album TEXT NOT NULL DEFAULT '',
                genre_tag TEXT NOT NULL DEFAULT '', duration REAL NOT NULL DEFAULT 0,
                analysis TEXT, analysis_mtime INTEGER NOT NULL DEFAULT 0, analysis_version INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS sets (
+               id TEXT PRIMARY KEY, created REAL NOT NULL, title TEXT NOT NULL, prompt TEXT NOT NULL, plan TEXT NOT NULL
              );",
         )?;
         Ok(Library { conn: Mutex::new(conn) })
@@ -157,14 +176,66 @@ impl Library {
         rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
     }
 
-    pub fn needs_analysis(&self) -> Result<Vec<(String, PathBuf, String)>> {
+    /// Tracks whose analysis is missing or stale, with a BPM range to fold
+    /// octave errors into when tags/artist/folder name a beatmatched genre.
+    pub fn needs_analysis(&self) -> Result<Vec<PendingAnalysis>> {
         let conn = self.conn.lock().unwrap();
-        let mut st = conn
-            .prepare("SELECT id, path, genre_tag FROM tracks WHERE analysis IS NULL OR analysis_mtime < mtime OR analysis_version != ?1")?;
+        let mut st = conn.prepare(
+            "SELECT id, path, genre_tag, artist FROM tracks WHERE analysis IS NULL OR analysis_mtime < mtime OR analysis_version != ?1",
+        )?;
         let rows = st.query_map([ANALYSIS_VERSION], |r| {
-            Ok((r.get::<_, String>(0)?, PathBuf::from(r.get::<_, String>(1)?), r.get::<_, String>(2)?))
+            let (path, tag, artist): (String, String, String) = (r.get(1)?, r.get(2)?, r.get(3)?);
+            Ok((r.get::<_, String>(0)?, PathBuf::from(&path), genres::bpm_hint(&tag, &artist, &path)))
         })?;
         rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
+    }
+
+    /// Every analysed track with its genre scores, ready for the planner.
+    /// Genres are classified on read (cheap string work), so they always
+    /// reflect the current profiles without a migration.
+    pub fn candidates(&self) -> Result<Vec<Candidate>> {
+        let analysed: Vec<TrackSummary> = self.tracks()?.into_iter().filter(|t| t.analyzed).collect();
+        let mut out = Vec::with_capacity(analysed.len());
+        for t in analysed {
+            if let Some(a) = self.analysis(&t.id)? {
+                let genres = genres::classify(&t.genre_tag, &t.artist, &t.path, Some(a.bpm));
+                out.push(Candidate { track: t, analysis: a, genres });
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn save_set(&self, p: &SetPlan) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO sets (id, created, title, prompt, plan) VALUES (?1,?2,?3,?4,?5)",
+            params![p.id, p.created, p.title, p.prompt, serde_json::to_string(p)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn sets(&self) -> Result<Vec<SetSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn
+            .prepare("SELECT id, created, title, prompt, json_array_length(plan, '$.tracks') FROM sets ORDER BY created DESC LIMIT 200")?;
+        let rows = st.query_map([], |r| {
+            Ok(SetSummary { id: r.get(0)?, created: r.get(1)?, title: r.get(2)?, prompt: r.get(3)?, tracks: r.get(4)? })
+        })?;
+        rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
+    }
+
+    pub fn set(&self, id: &str) -> Result<Option<SetPlan>> {
+        let conn = self.conn.lock().unwrap();
+        let s: Option<String> = conn.query_row("SELECT plan FROM sets WHERE id=?1", [id], |r| r.get(0)).optional()?;
+        Ok(match s {
+            Some(j) => Some(serde_json::from_str(&j)?),
+            None => None,
+        })
+    }
+
+    pub fn delete_set(&self, id: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("DELETE FROM sets WHERE id=?1", [id])?;
+        Ok(())
     }
 
     pub fn save_analysis(&self, id: &str, a: &Analysis) -> Result<()> {
@@ -245,6 +316,28 @@ fn read_tags(path: &Path) -> (String, String, String, String, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sets_round_trip() {
+        let lib = Library::in_memory().unwrap();
+        let it = crate::intent::parse("dnb", &[]);
+        let plan = SetPlan {
+            id: "abc".into(),
+            created: 1.0,
+            title: "T".into(),
+            prompt: "dnb".into(),
+            intent: it,
+            tracks: vec![],
+            est_total_sec: 0.0,
+            arc: vec![],
+            notes: vec![],
+        };
+        lib.save_set(&plan).unwrap();
+        assert_eq!(lib.sets().unwrap()[0].id, "abc");
+        assert_eq!(lib.set("abc").unwrap().unwrap(), plan);
+        lib.delete_set("abc").unwrap();
+        assert!(lib.sets().unwrap().is_empty());
+    }
 
     #[test]
     fn ids_are_stable_and_distinct() {
