@@ -1,0 +1,22 @@
+# Rust
+target/
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+# Tauri
+apps/desktop/src-tauri/gen/
+# Local audio never goes in the repo (commercial music)
+songs/
+*.mp3
+*.flac
+*.wav
+!crates/**/fixtures/*.wav
+# Models are downloaded on demand, not committed
+models/
+*.onnx
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
