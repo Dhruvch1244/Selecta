@@ -418,7 +418,7 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
     // is a house artist; octave folding alone missed 3:2 errors. The prior
     // keeps strong evidence winning and breaks ties the genre's way.
     let (center, width) = match bpm_range {
-        Some((lo, hi)) => (((lo * hi) as f64).sqrt(), 0.45),
+        Some((lo, hi)) => ((lo * hi).sqrt(), 0.45),
         None => (125.0, 1.0),
     };
     let bpm0 = estimate_tempo(&onset, fps, center, width);
