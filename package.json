@@ -1,0 +1,22 @@
+{
+  "name": "selecta",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/ui", "apps/desktop", "packages/engine", "packages/protocol"],
+  "scripts": {
+    "dev": "npm run tauri -w @selecta/desktop -- dev",
+    "build": "npm run tauri -w @selecta/desktop -- build",
+    "dev:ui": "npm run dev -w @selecta/ui",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present",
+    "protocol": "cargo test -p selecta-core --quiet export_bindings",
+    "check": "npm run lint && npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "eslint": "^10.14.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}

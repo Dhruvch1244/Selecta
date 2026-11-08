@@ -1,12 +1,59 @@
 # Selecta
 
-A local, AI-driven DJ: describe the set you want ("crazy DnB", "friends are coming, Bollywood",
-"Seedhe Maut hip hop") and Selecta builds and performs it from your own music library,
-with beatmatched transitions, stem-aware effects, keylock and lyrics synced to the music.
+A local, AI-driven DJ. Describe the set you want ("crazy DnB", "friends are
+coming, Bollywood", "Seedhe Maut hip hop") and Selecta builds and performs it
+from your own music library: beatmatched, phrase-aware transitions,
+stem-aware effects with a reason behind every one, keylock, and lyrics synced
+to what is actually playing.
 
-Native desktop app: Tauri 2 + a Rust core + a React UI. Everything runs on your machine.
+Native desktop app: **Tauri 2 shell + Rust core + React UI**. Everything runs
+on your machine.
 
-> Status: v1 is being built in the open. See the open pull requests for progress.
+> **Status: v1 foundation.** The stack, design system, CI/CD and a working
+> vertical slice (scan → analyse in Rust → two decks with sync, EQ, filter,
+> faders and meters) are in. The set planner, FX director, AI curation, stems
+> and keylock arrive as follow-up PRs: see [docs/ROADMAP.md](docs/ROADMAP.md).
+
+![Selecta: two decks synced, mixer and browser (dark)](docs/img/studio-dark.png)
+
+## Run it
+
+Prerequisites: Rust (stable), Node 24+, and on Linux the Tauri system libraries
+(`webkit2gtk-4.1`, `gtk3`, `librsvg`).
+
+```sh
+npm install
+npm run dev        # the desktop app, with hot reload
+npm run build      # installers for this OS (AppImage/deb/rpm, NSIS, dmg)
+```
+
+UI work without the Rust build: `npm run dev:ui`, then open
+`http://localhost:1420/?mock` (see `apps/ui/src/dev/mock-backend.ts`).
+
+## Repository
+
+```
+crates/selecta-core     Rust: decode, analysis, library (SQLite), job scheduler. No Tauri, ever.
+apps/desktop/src-tauri  Rust: Tauri shell, thin async commands over the core
+apps/ui                 React + TypeScript + Vite + Tailwind v4, dsgn components, "Studio" voice
+packages/engine         TypeScript: Web Audio decks, mixer, beat-grid maths. No React, ever.
+packages/protocol       TypeScript types generated from the Rust structs (ts-rs)
+```
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the pieces fit, and why
+- [docs/DESIGN.md](docs/DESIGN.md): the FL-Studio-inspired design principles and tokens
+- [docs/ROADMAP.md](docs/ROADMAP.md): what's next, PR by PR
+
+## Checks
+
+```sh
+npm run check                    # eslint + typecheck + vitest
+cargo test --workspace           # core analysis, scheduler, library
+cargo clippy --workspace --all-targets -- -D warnings
+npm run protocol                 # regenerate TS types after changing a Rust type
+```
+
+Contributions go through pull requests: `main` is protected.
 
 ## License
 
