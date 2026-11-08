@@ -1,0 +1,135 @@
+/*
+ * "Studio" voice: FL Studio's design principles applied through the dsgn
+ * token system. Values only: the names are dsgn's (raw -> semantic ->
+ * Tailwind @theme), so every registry component reskins with zero source
+ * edits. See docs/DESIGN.md for the principles behind each value.
+ *
+ * Colour roles that matter in a DAW, mapped onto existing dsgn hues:
+ *   --warm    accent: selection, focus, primary action (FL's orange)
+ *   --cyan    Deck A, and the "cool" end of meters
+ *   --magenta Deck B
+ *   --violet  phrase/structure markers on waveforms
+ *   --destructive  clip LEDs and errors only
+ */
+
+@import "tailwindcss";
+
+:root,
+[data-theme="dark"] {
+  /* Slate, not black: a black UI makes coloured clips and meters glare in a dark room. */
+  --void: #1b1f22;
+  --surface: #262b2f;
+  --ink: #dce1e5;
+  --ink-soft: #9ea9b1;
+  --ink-faint: #6b767e;
+  --rule: #3a4147;
+
+  --cyan: #4fc6da;
+  --cyan-soft: #8fdcea;
+  --warm: #f5a04b;
+  --magenta: #e8628f;
+  --violet: #a08cff;
+
+  --glass: #2c3236;
+  --glass-strong: #31383d;
+
+  --background: var(--void);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--void);
+  --secondary: #30373c;
+  --secondary-foreground: var(--ink);
+  --accent: var(--warm);
+  --accent-foreground: #1b1f22;
+  --muted: #1f2427;
+  --muted-foreground: var(--ink-soft);
+  --destructive: #ff5a5f;
+  --destructive-foreground: #1b1f22;
+  --border: var(--rule);
+  --ring: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+[data-theme="light"] {
+  /* Hues darkened for AA contrast on a light ground, not just swapped. */
+  --void: #d9dde0;
+  --surface: #eceff1;
+  --ink: #15191c;
+  --ink-soft: #3f4850;
+  --ink-faint: #66717a;
+  --rule: #b5bdc3;
+
+  --cyan: #0b7f92;
+  --cyan-soft: #0a6676;
+  --warm: #b85f00;
+  --magenta: #b8235a;
+  --violet: #5b3fd6;
+
+  --glass: #e3e7ea;
+  --glass-strong: #dde2e5;
+
+  --secondary: #f6f8f9;
+  --accent-foreground: #ffffff;
+  --muted: #cfd5d9;
+  --destructive: #c4161c;
+  --destructive-foreground: #ffffff;
+}
+
+[data-accent="cyan"] { --accent: var(--cyan); }
+[data-accent="violet"] { --accent: var(--violet); }
+[data-accent="magenta"] { --accent: var(--magenta); }
+[data-accent="warm"] { --accent: var(--warm); }
+
+:root {
+  /* Near-flat: FL's panels are crisp rectangles with a hairline bevel. */
+  --radius-scale: 0.3;
+  --radius-sm: calc(0.25rem * var(--radius-scale));
+  --radius-md: calc(0.5rem * var(--radius-scale));
+  --radius-lg: calc(0.75rem * var(--radius-scale));
+  --radius-xl: calc(1rem * var(--radius-scale));
+  --radius-2xl: calc(1.25rem * var(--radius-scale));
+  --radius-3xl: calc(1.5rem * var(--radius-scale));
+
+  --ease-fluid: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Barlow Condensed", "Inter Variable", ui-sans-serif, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+
+  /* The FL bevel: light top edge, dark bottom edge. Glow follows the accent. */
+  --shadow-ambient: inset 0 1px 0 color-mix(in srgb, var(--ink) 6%, transparent), 0 1px 0 color-mix(in srgb, black 45%, transparent);
+  --shadow-glow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 12px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --font-sans: var(--font-sans);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+
+  --shadow-ambient: var(--shadow-ambient);
+  --shadow-glow: var(--shadow-glow);
+  --ease-fluid: var(--ease-fluid);
+}

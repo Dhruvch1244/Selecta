@@ -1,0 +1,55 @@
+@import "./tokens.css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource/barlow-condensed/500.css";
+@import "@fontsource/barlow-condensed/600.css";
+
+/*
+ * A DAW is an application, not a document: no page scroll, no text
+ * selection on controls, a 12px base so dense panels stay legible, and
+ * motion kept to 80-150 ms state changes. Panels never animate in.
+ */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+/* Dense 12px text on body only: setting it on <html> would shrink the rem
+ * unit and silently scale every Tailwind/dsgn size by 0.75. */
+body {
+  font-size: 12px;
+}
+
+input,
+textarea,
+[data-selectable] {
+  user-select: text;
+}
+
+:focus-visible {
+  outline: 1px solid var(--ring);
+  outline-offset: 1px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}

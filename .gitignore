@@ -20,3 +20,6 @@ models/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Dev fixtures for the UI mock backend (generated, may contain audio)
+apps/ui/public/__fixtures__/

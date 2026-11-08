@@ -1,0 +1,43 @@
+// Dev-only stand-in for the Rust shell, so the UI can be built and checked
+// in a plain browser: `npm run dev:ui`, then open http://localhost:1420/?mock.
+// Fixtures live in apps/ui/public/__fixtures__/ (gitignored audio), made by:
+//   cargo run --release -p selecta-core --example analyze -- *.mp3 > library.json
+// Never bundled: main.tsx only imports this when import.meta.env.DEV is true.
+
+import type { Analysis, TrackSummary } from "@selecta/protocol";
+
+interface Fixture {
+  path: string;
+  analysis: Analysis;
+}
+
+export async function installMockBackend(): Promise<void> {
+  const fixtures: Fixture[] = await fetch("/__fixtures__/library.json").then((r) => (r.ok ? r.json() : []));
+  const byId = new Map<string, Fixture>();
+  const tracks: TrackSummary[] = fixtures.map((f, i) => {
+    const file = f.path.split("/").pop() ?? f.path;
+    const [artist, title] = file.replace(/\.[^.]+$/, "").split(" - ");
+    const id = `mock${i}`;
+    byId.set(id, f);
+    return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot };
+  });
+  const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
+    settings_get: () => ({ musicDirs: ["/__fixtures__"] }),
+    settings_set: () => null,
+    library_tracks: () => tracks,
+    library_scan: () => ({ found: tracks.length, added: 0, updated: 0, removed: 0 }),
+    track_analysis: (a) => byId.get(String(a.id))?.analysis,
+    jobs_progress: () => [],
+  };
+  Object.assign(window, {
+    __TAURI_INTERNALS__: {
+      invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+        const h = handlers[cmd];
+        if (!h) throw new Error(`mock backend: no handler for ${cmd}`);
+        return h(args);
+      },
+      convertFileSrc: (p: string) => p,
+      transformCallback: () => 0,
+    },
+  });
+}

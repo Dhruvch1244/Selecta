@@ -1,0 +1,17 @@
+[package]
+name = "selecta-core"
+description = "Selecta's engine-agnostic core: audio analysis, library, planning. Must never depend on Tauri or any UI crate."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ts-rs.workspace = true
+rustfft = "6"
+symphonia = { version = "0.6", features = ["all"] }
+lofty = "0.25"
+rusqlite = { version = "0.41", features = ["bundled"] }
+rayon = "1"

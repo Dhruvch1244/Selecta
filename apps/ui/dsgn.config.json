@@ -1,0 +1,72 @@
+{
+  "$schema": "https://design.dhruvchoudhary.com/schema/config.json",
+  "componentsDir": "src/components/dsgn",
+  "utilsDir": "src/lib",
+  "alias": "@",
+  "installed": {
+    "src/lib/utils.ts": {
+      "item": "utils",
+      "hash": "sha256:3d4aea869f939c39d35f17b0ebc6b393f88b76c1608ef9d953d51a62aee32f50"
+    },
+    "src/components/dsgn/button.tsx": {
+      "item": "button",
+      "hash": "sha256:dc8802c165132ca465e07fb44162a37060aa87dae20968f6b78edf62508d5409"
+    },
+    "src/components/dsgn/tabs.tsx": {
+      "item": "tabs",
+      "hash": "sha256:dbc04ff6036e0f44d7e94d9bddd2f7e0d97a3e0b821f30b5cc094b661ac6fd9b"
+    },
+    "src/components/dsgn/select.tsx": {
+      "item": "select",
+      "hash": "sha256:711e602a5ac1ae339f0b41403dbe50f6ff00b00405afbf0c0c7f829535f8bfd1"
+    },
+    "src/components/dsgn/slider.tsx": {
+      "item": "slider",
+      "hash": "sha256:86f0d282757cd0dea309bf4ddb3c8fb2c52dc71663ba131e4e734c60cc515291"
+    },
+    "src/components/dsgn/scroll-area.tsx": {
+      "item": "scroll-area",
+      "hash": "sha256:3038179a4ccb44fd56a8ab84a036515f166f0aa5a185eacc29368e673849c514"
+    },
+    "src/components/dsgn/context-menu.tsx": {
+      "item": "context-menu",
+      "hash": "sha256:e80ad72f7e3e65c9261fbad160839bd07400e22139d0afbfcbc6ed2c3ed04a2a"
+    },
+    "src/components/dsgn/dropdown-menu.tsx": {
+      "item": "dropdown-menu",
+      "hash": "sha256:6f27ebafc5693ef0f0fc8f3a46dd67b7daac3160bcbdf7ead0c4840dec49d7d2"
+    },
+    "src/components/dsgn/toggle.tsx": {
+      "item": "toggle",
+      "hash": "sha256:32b902a827b9392858703cadca8a87f3a22dc3ba5ededd2df841cbc16d59a2a9"
+    },
+    "src/components/dsgn/toggle-group.tsx": {
+      "item": "toggle-group",
+      "hash": "sha256:2130dbb810a472d8875b5c778f3e22a2d321ce38ae7e8f8ade3442e5b50976d9"
+    },
+    "src/components/dsgn/tooltip.tsx": {
+      "item": "tooltip",
+      "hash": "sha256:d0578dbb005e7bdc62e150ecd643b5b249ed00b82f378ec08bbfe48d23029fc7"
+    },
+    "src/components/dsgn/switch.tsx": {
+      "item": "switch",
+      "hash": "sha256:adca45f933f0a2a5a807e61b5711b3a981ae090580c23b861ff2707069b1a3e7"
+    },
+    "src/components/dsgn/separator.tsx": {
+      "item": "separator",
+      "hash": "sha256:de7831ff793886af8209dda7546bf797eb00ce245976531f3b60e8d61269912c"
+    },
+    "src/components/dsgn/progress.tsx": {
+      "item": "progress",
+      "hash": "sha256:b42fbf006942bc9c205d9e2105b2c919a1f0cf9be50fe856a3f39b37667a14bb"
+    },
+    "src/components/dsgn/input.tsx": {
+      "item": "input",
+      "hash": "sha256:eacec21bade786c1d37be384e645e8b22110333c7848f328270c7cf73b02c5c7"
+    },
+    "src/components/dsgn/table.tsx": {
+      "item": "table",
+      "hash": "sha256:6a5efc41dfad0d171702d2531f7b38a9b8a2c5d1758d0ac537dd0793690f7e9c"
+    }
+  }
+}

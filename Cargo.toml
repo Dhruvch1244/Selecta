@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/selecta-core", "apps/desktop/src-tauri"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ts-rs = { version = "12", features = ["serde-compat"] }
+
+[profile.dev.package."*"]
+# DSP in debug builds is unusably slow; optimise dependencies even in dev.
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
