@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with: { node-version: 24, cache: npm }
       - run: npm ci
       - run: npm run lint
@@ -54,7 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with: { node-version: 24, cache: npm }
       - run: npm ci
       # generate_context! embeds the built UI, so it must exist before clippy.
