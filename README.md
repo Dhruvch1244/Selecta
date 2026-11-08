@@ -26,6 +26,7 @@ Prerequisites: Rust (stable), Node 24+, and on Linux the Tauri system libraries
 npm install
 npm run dev        # the desktop app, with hot reload
 npm run build      # installers for this OS (AppImage/deb/rpm, NSIS, dmg)
+./scripts/install-local.sh   # Linux: build this checkout and install/update it in your app menu
 ```
 
 UI work without the Rust build: `npm run dev:ui`, then open

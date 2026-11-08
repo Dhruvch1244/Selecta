@@ -17,6 +17,7 @@ Guidance for Claude Code (and humans) working in this repo.
 ```sh
 npm run dev            # desktop app (Tauri + Vite)
 npm run dev:ui         # UI only; open http://localhost:1420/?mock
+./scripts/install-local.sh   # build this checkout, install/update ~/.local/bin/selecta + menu entry
 npm run check          # eslint + typecheck + vitest
 npm run protocol       # regenerate TS types from Rust (commit the result)
 cargo test --workspace
