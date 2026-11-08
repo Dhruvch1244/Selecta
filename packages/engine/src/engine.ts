@@ -9,6 +9,8 @@ export class Engine {
   readonly ctx: AudioContext;
   readonly decks: Record<DeckId, Deck>;
   readonly limiterReady: Promise<void>;
+  /** Master one-shots (horns, risers, impacts) join the mix before the limiter. */
+  readonly fxBus: GainNode;
   master: MeterState = newMeter();
   private readonly mix: GainNode;
   private readonly volume: GainNode;
@@ -27,6 +29,9 @@ export class Engine {
     // worklet module has loaded (a few ms) the mix runs straight to the
     // volume, so nothing is ever silent waiting on it.
     this.mix.connect(this.volume).connect(ctx.destination);
+    this.fxBus = ctx.createGain();
+    this.fxBus.gain.value = 0.7;
+    this.fxBus.connect(this.mix);
     this.limiterReady = loadLimiter(ctx).then((lim) => {
       this.mix.disconnect(this.volume);
       this.mix.connect(lim).connect(this.volume);
@@ -65,6 +70,7 @@ export class Engine {
 /** Load the limiter worklet module and create a node (works for offline contexts too). */
 export async function loadLimiter(ctx: BaseAudioContext, ceilingDb = -1): Promise<AudioWorkletNode> {
   await ctx.audioWorklet.addModule(new URL("./limiter-worklet.js", import.meta.url));
+  await ctx.audioWorklet.addModule(new URL("./fx-worklets.js", import.meta.url));
   const node = new AudioWorkletNode(ctx, "selecta-limiter", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
   node.parameters.get("ceiling")!.value = ceilingDb;
   return node;

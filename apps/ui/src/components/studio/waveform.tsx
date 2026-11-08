@@ -1,6 +1,7 @@
 import * as React from "react";
 import { barOfPos, posOfBar, type Deck } from "@selecta/engine";
 import { onFrame } from "@/lib/frame";
+import { getConductor } from "@/lib/set-store";
 import { hintProps } from "@/lib/hint";
 import { cn } from "@/lib/utils";
 
@@ -94,6 +95,21 @@ export function DetailWave({ deck, color, className }: { deck: Deck; color: stri
           c.fill();
         }
       }
+      // The director's effect cues for this track: a bar along the top for each.
+      const plan = getConductor()?.plan;
+      const cues = plan?.tracks.find((t) => t.id === tr.id)?.fx ?? [];
+      c.font = `${9 * dpr}px ${col("--font-mono")}`;
+      for (const cue of cues) {
+        const x = (posOfBar(g, cue.bar) - x0) * pxs;
+        const xe = (posOfBar(g, cue.bar + cue.beats / 4) - x0) * pxs;
+        if (xe < 0 || x > w) continue;
+        c.fillStyle = col("--accent");
+        c.globalAlpha = 0.85;
+        c.fillRect(x, 14 * dpr, Math.max(2 * dpr, xe - x), 3 * dpr);
+        c.globalAlpha = 0.9;
+        c.fillText(cue.fx.replace(":", " "), x + 2 * dpr, 26 * dpr);
+      }
+      c.globalAlpha = 1;
       c.fillStyle = ink;
       c.fillRect(w / 2 - dpr, 0, 2 * dpr, h);
     });

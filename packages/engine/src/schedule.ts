@@ -28,6 +28,8 @@ export interface TransitionSchedule {
   outEndsAt: number;
   moves: Move[];
   echo?: { at: number; until: number; delaySec: number };
+  /** An effect on the outgoing deck that *is* the exit (backspin, rewind...). */
+  exitFx?: { id: string; at: number; until: number };
 }
 
 export const KILL_DB = -40;
@@ -99,6 +101,19 @@ export function scheduleTransition(t: Transition, barTime: (bar: number) => numb
         moves,
         echo: { at: tFrom, until: tEnter, delaySec: (t.echoDiv ?? 0.25) * barSec },
       };
+    }
+    case "backspin":
+    case "tape_stop":
+    case "rewind":
+    case "loop_roll": {
+      const beatSec = barSec / 4;
+      // Backspins are short and land right before the downbeat; the others use the whole lead-in.
+      const at = t.kind === "backspin" ? tEnter - 2 * beatSec : tFrom;
+      const id = { backspin: "backspin:2", tape_stop: "tape_stop:2", rewind: "rewind:8", loop_roll: "roll_build:2" }[t.kind];
+      m("out", "fader", tEnter - 0.004, 1);
+      m("out", "fader", tEnter - 0.004, 0, tEnter);
+      m("in", "fader", tEnter, 1);
+      return { kind: t.kind, startIn: tEnter, handoverAt: tEnter, outEndsAt: tEnter + 0.05, moves, exitFx: { id, at, until: tEnter } };
     }
     case "slam":
     case "start":

@@ -41,6 +41,15 @@ export class Deck {
   /** Isolator band gains (linear; 0 = full kill). */
   private readonly eq: Record<Band, GainNode>;
   private readonly eqIn: GainNode;
+  readonly slotIn: GainNode;
+  readonly slotOut: GainNode;
+  readonly tail: GainNode;
+  private readonly slotDry: GainNode;
+  private insertWindows: [number, number][] = [];
+  private rev: AudioBuffer | null = null;
+  /** End of the current playback override (loop roll, backspin...): another can't start before it. */
+  busyUntil = 0;
+  private ov: { t0: number; t1: number; posFn: ((t: number) => number) | null } | null = null;
   private readonly bandSum: GainNode;
   private readonly filterHp: BiquadFilterNode;
   private readonly filterLp: BiquadFilterNode;
@@ -101,11 +110,16 @@ export class Deck {
     this.vca
       .connect(this.trimNode)
       .connect(this.eqIn);
-    this.bandSum
-      .connect(this.filterHp)
-      .connect(this.filterLp)
-      .connect(this.fader)
-      .connect(out);
+    // FX slot after the filters: inserts mute `slotDry` for their window and
+    // feed `slotOut` themselves; sends tap `slotIn` and return on `tail`,
+    // which is post-fader so echo/reverb tails ring on after a fader cut.
+    this.slotIn = ctx.createGain();
+    this.slotDry = ctx.createGain();
+    this.slotOut = ctx.createGain();
+    this.tail = ctx.createGain();
+    this.bandSum.connect(this.filterHp).connect(this.filterLp).connect(this.slotIn);
+    this.slotIn.connect(this.slotDry).connect(this.slotOut).connect(this.fader).connect(out);
+    this.tail.connect(out);
     this.fader.connect(this.analyser);
     // Echo send taps pre-fader and returns straight to the mix bus, so an
     // echo-out tail keeps ringing after this deck's fader is cut.
@@ -136,6 +150,9 @@ export class Deck {
   load(track: LoadedTrack): void {
     this.stop();
     this.track = track;
+    this.rev = null;
+    this.busyUntil = 0;
+    this.ov = null;
     const chans = Array.from({ length: Math.min(2, track.buffer.numberOfChannels) }, (_, i) => track.buffer.getChannelData(i));
     this.wave = computeWaveform(chans, track.buffer.sampleRate);
     this.base = { t: this.ctx.currentTime, pos: posOfBar(this.gridOrThrow(), track.analysis.startBar), rate: 1 };
@@ -146,7 +163,9 @@ export class Deck {
 
   /** Position in track seconds at context time `t` (defaults to now). Frozen while stopped. */
   position(t = this.ctx.currentTime): number {
-    return posAt(this.base, Math.min(t, this.stoppedAt));
+    const tt = Math.min(t, this.stoppedAt);
+    if (this.ov?.posFn && tt >= this.ov.t0 && tt < this.ov.t1) return this.ov.posFn(tt);
+    return posAt(this.base, tt);
   }
   bar(t = this.ctx.currentTime): number {
     const g = this.grid;
@@ -227,6 +246,105 @@ export class Deck {
   setFader(v: number): void {
     // Equal-power-ish curve: a fader at 50% should sound half as loud, not silent.
     this.fader.gain.setTargetAtTime(Math.pow(v, 1.6), this.ctx.currentTime, 0.008);
+  }
+
+  /**
+   * Mute the dry path for [t0, t1] while an insert effect feeds `slotOut`.
+   * Windows are merged and the automation rebuilt, so two overlapping
+   * inserts never fight over the same AudioParam.
+   */
+  addInsert(t0: number, t1: number): void {
+    const now = this.ctx.currentTime;
+    this.insertWindows = this.insertWindows.filter((w) => w[1] > now - 0.05);
+    this.insertWindows.push([t0, t1]);
+    this.insertWindows.sort((a, b) => a[0] - b[0]);
+    const merged: [number, number][] = [];
+    for (const w of this.insertWindows) {
+      const last = merged.at(-1);
+      if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1]);
+      else merged.push([w[0], w[1]]);
+    }
+    const g = this.slotDry.gain;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    for (const [a, b] of merged) {
+      g.setValueAtTime(1, Math.max(now, a - 0.006));
+      g.linearRampToValueAtTime(0, Math.max(now, a));
+      g.setValueAtTime(0, Math.max(now, b - 0.006));
+      g.linearRampToValueAtTime(1, Math.max(now, b));
+    }
+  }
+
+  /** The track reversed (for backspins and rewinds), computed once per load. */
+  get reversed(): AudioBuffer | null {
+    const b = this.track?.buffer;
+    if (!b) return null;
+    if (!this.rev) {
+      const r = this.ctx.createBuffer(b.numberOfChannels, b.length, b.sampleRate);
+      for (let ch = 0; ch < b.numberOfChannels; ch++) {
+        const src = b.getChannelData(ch);
+        const dst = r.getChannelData(ch);
+        for (let i = 0, n = src.length; i < n; i++) dst[i] = src[n - 1 - i] ?? 0;
+      }
+      this.rev = r;
+    }
+    return this.rev;
+  }
+
+  /** Head of the deck's chain: playback sources connect here. */
+  get input(): AudioNode {
+    return this.vca;
+  }
+
+  /** A source wired into this deck's chain (used by playback overrides). */
+  source(buffer: AudioBuffer, rate = this.base.rate): AudioBufferSourceNode {
+    const s = this.ctx.createBufferSource();
+    s.buffer = buffer;
+    s.playbackRate.value = rate;
+    s.connect(this.vca);
+    return s;
+  }
+
+  /**
+   * Replace playback for [t0, t1] with sources from `build` (slip mode): the
+   * base line keeps running, so afterwards the track resumes exactly where it
+   * would have been, on the grid. `after: "stop"` ends the deck instead;
+   * `{pos}` jumps (a rewind's pull-up). Returns false if the deck is busy.
+   */
+  override(
+    t0: number,
+    t1: number,
+    build: (t0: number, t1: number, pos0: number) => AudioBufferSourceNode[],
+    opts: { after?: "slip" | "stop" | { pos: number }; posFn?: (t: number, pos0: number) => number } = {},
+  ): boolean {
+    if (!this.track || !this.playing || !this.src || t0 < Math.max(this.ctx.currentTime, this.busyUntil)) return false;
+    const pos0 = posAt(this.base, t0);
+    const declick = (t: number, up: boolean) => {
+      this.vca.gain.setValueAtTime(up ? 0 : 1, t - (up ? 0 : DECLICK));
+      this.vca.gain.linearRampToValueAtTime(up ? 1 : 0, t + (up ? DECLICK : 0));
+    };
+    declick(t0, false);
+    this.src.stop(t0);
+    const srcs = build(t0, t1, pos0);
+    declick(t0 + 0.0001, true);
+    for (const s of srcs) s.stop(t1);
+    this.ov = { t0, t1, posFn: opts.posFn ? (t) => opts.posFn!(t, pos0) : null };
+    this.busyUntil = t1;
+    const after = opts.after ?? "slip";
+    if (after === "stop") {
+      this.src = null;
+      this.playing = false;
+      this.stoppedAt = t1;
+      return true;
+    }
+    if (after !== "slip") this.base = { t: t1, pos: after.pos, rate: this.base.rate };
+    const resume = posAt(this.base, t1);
+    declick(t1, false);
+    const main = this.source(this.track.buffer);
+    main.start(t1, Math.max(0, resume));
+    declick(t1 + 0.0001, true);
+    this.src = main;
+    return true;
   }
 
   /** Neutral mixer state for a freshly loaded track that a set is about to automate. */

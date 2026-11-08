@@ -11,9 +11,10 @@ on your machine.
 
 > **Status:** foundation plus the set planner. Describe a set and Selecta
 > picks, orders and performs it: beatmatched blends, bass swaps, double drops,
-> filter mixes, echo-outs and slams on phrase boundaries. AI curation, the FX
-> director, lyrics, Spotify, stems and keylock follow: see
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> filter mixes, echo-outs, slams, backspins, rewinds and loop rolls on phrase
+> boundaries, with an FX director (builds into drops, hits on the one, throws
+> into breakdowns), a live FX pad, and optional AI curation by your Claude CLI.
+> Lyrics, Spotify, stems and keylock follow: see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ![Selecta mid-transition: a planned DnB set, deck A handing over to deck B with bar lines aligned](docs/img/set-transition.png)
 

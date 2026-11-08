@@ -27,6 +27,10 @@ const KIND_LABEL: Record<string, string> = {
   filter: "FILTER",
   echo_out: "ECHO OUT",
   slam: "SLAM",
+  backspin: "BACKSPIN",
+  tape_stop: "TAPE STOP",
+  rewind: "REWIND",
+  loop_roll: "LOOP ROLL",
 };
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
@@ -215,7 +219,7 @@ function Timeline({ tracks, current }: { tracks: SetTrack[]; current: number }) 
             style={{ flex: `${Math.max(20, t.estSec)} 1 0`, background: `color-mix(in srgb, ${deck} ${i === current ? 32 : 18}%, var(--card))`, borderTop: `2px solid ${deck}` }}
             {...hintProps({
               label: `${i + 1}. ${t.artist} – ${t.title}`,
-              value: `${t.genreLabel || "?"} · ${t.bpm.toFixed(1)} BPM${t.rate !== 1 ? ` → ${(t.bpm * t.rate).toFixed(1)}` : ""} · ${t.camelot} · bars ${t.inBar}–${t.outBar} · ${fmt(t.estSec)}${t.trans.kind !== "start" ? ` · in by ${t.trans.kind.replace("_", " ")}` : ""}`,
+              value: `${t.genreLabel || "?"} · ${t.bpm.toFixed(1)} BPM${t.rate !== 1 ? ` → ${(t.bpm * t.rate).toFixed(1)}` : ""} · ${t.camelot} · bars ${t.inBar}–${t.outBar} · ${fmt(t.estSec)}${t.trans.kind !== "start" ? ` · in by ${t.trans.kind.replace("_", " ")}` : ""}${t.fx.length ? ` · ${t.fx.length} FX: ${t.fx.map((f) => f.fx.split(":")[0]).join(", ")}` : ""}`,
             })}
           >
             <span className="truncate text-[11px] font-medium text-foreground">{t.title}</span>

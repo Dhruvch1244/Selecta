@@ -5,6 +5,7 @@
 
 pub mod analysis;
 pub mod decode;
+pub mod fx;
 pub mod genres;
 pub mod intent;
 pub mod jobs;

@@ -3,6 +3,11 @@
   "private": true,
   "type": "module",
   "description": "TypeScript mirror of selecta-core types. src/generated is written by ts-rs (npm run protocol); never edit it by hand.",
-  "exports": { ".": "./src/index.ts" },
-  "scripts": { "typecheck": "tsc -p tsconfig.json --noEmit" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./fx-catalog.json": "./src/generated/fx-catalog.json"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
 }

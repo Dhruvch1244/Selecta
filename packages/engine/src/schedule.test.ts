@@ -41,6 +41,17 @@ describe("scheduleTransition", () => {
     expect(last(s.moves, "out", "fader")).toMatchObject({ value: 0, until: barTime(64) });
   });
 
+  it("fx exits: the move ends exactly on the incoming downbeat", () => {
+    for (const kind of ["backspin", "tape_stop", "rewind", "loop_roll"] as const) {
+      const fromBar = kind === "loop_roll" ? 62 : 63;
+      const s = scheduleTransition(tr({ kind, fromBar, len: 64 - fromBar, enterAt: 64 }), barTime, barSec);
+      expect(s.exitFx!.until).toBeCloseTo(barTime(64), 9);
+      expect(s.exitFx!.at).toBeLessThan(barTime(64));
+      expect(s.exitFx!.at).toBeGreaterThanOrEqual(barTime(fromBar) - 1e-9);
+      expect(s.startIn).toBeCloseTo(barTime(64), 9);
+    }
+  });
+
   it("slam: a declicked cut on the downbeat", () => {
     const s = scheduleTransition(tr({ kind: "slam", fromBar: 64, len: 0, enterAt: 64 }), barTime, barSec);
     const fade = last(s.moves, "out", "fader");

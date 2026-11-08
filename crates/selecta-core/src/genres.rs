@@ -89,7 +89,16 @@ pub static PROFILES: &[Profile] = &[
             "crissy criss",
         ],
         related: &["dubstep", "edm"],
-        transitions: &[("blend", 3.0), ("bassswap", 4.0), ("double_drop", 3.0), ("echo_out", 1.0), ("filter", 2.0), ("slam", 1.0)],
+        transitions: &[
+            ("blend", 3.0),
+            ("bassswap", 4.0),
+            ("double_drop", 3.0),
+            ("echo_out", 1.0),
+            ("filter", 2.0),
+            ("slam", 1.0),
+            ("rewind", 1.0),
+            ("loop_roll", 1.5),
+        ],
         arc: "rave",
     },
     Profile {
@@ -117,7 +126,7 @@ pub static PROFILES: &[Profile] = &[
             "porter robinson",
         ],
         related: &["dnb", "edm"],
-        transitions: &[("bassswap", 3.0), ("double_drop", 3.0), ("slam", 2.0), ("echo_out", 1.0), ("filter", 2.0)],
+        transitions: &[("bassswap", 3.0), ("double_drop", 3.0), ("slam", 2.0), ("echo_out", 1.0), ("filter", 2.0), ("loop_roll", 2.0)],
         arc: "rave",
     },
     Profile {
@@ -240,7 +249,7 @@ pub static PROFILES: &[Profile] = &[
             "don diablo",
         ],
         related: &["house", "dubstep", "pop"],
-        transitions: &[("bassswap", 3.0), ("double_drop", 2.0), ("slam", 2.0), ("filter", 2.0), ("echo_out", 2.0)],
+        transitions: &[("bassswap", 3.0), ("double_drop", 2.0), ("slam", 2.0), ("filter", 2.0), ("echo_out", 2.0), ("loop_roll", 2.0)],
         arc: "party",
     },
     Profile {
@@ -301,7 +310,15 @@ pub static PROFILES: &[Profile] = &[
             "nikhita gandhi",
         ],
         related: &["punjabi", "desi_hiphop", "pop"],
-        transitions: &[("slam", 3.0), ("echo_out", 3.0), ("filter", 2.0), ("blend", 1.0)],
+        transitions: &[
+            ("slam", 3.0),
+            ("echo_out", 3.0),
+            ("filter", 2.0),
+            ("blend", 1.0),
+            ("rewind", 2.0),
+            ("backspin", 2.0),
+            ("loop_roll", 1.0),
+        ],
         arc: "party",
     },
     Profile {
@@ -332,7 +349,7 @@ pub static PROFILES: &[Profile] = &[
             "bohemia",
         ],
         related: &["bollywood", "desi_hiphop"],
-        transitions: &[("slam", 3.0), ("echo_out", 3.0), ("filter", 1.0)],
+        transitions: &[("slam", 3.0), ("echo_out", 3.0), ("filter", 1.0), ("rewind", 2.0), ("backspin", 2.0)],
         arc: "party",
     },
     Profile {
@@ -384,7 +401,7 @@ pub static PROFILES: &[Profile] = &[
             "yashraj",
         ],
         related: &["hiphop", "punjabi", "bollywood"],
-        transitions: &[("echo_out", 3.0), ("slam", 3.0), ("filter", 1.0)],
+        transitions: &[("echo_out", 3.0), ("slam", 3.0), ("filter", 1.0), ("backspin", 3.0), ("tape_stop", 2.0), ("rewind", 2.0)],
         arc: "hype",
     },
     Profile {
@@ -437,7 +454,7 @@ pub static PROFILES: &[Profile] = &[
             "busta rhymes",
         ],
         related: &["desi_hiphop", "trap", "rnb"],
-        transitions: &[("echo_out", 3.0), ("slam", 3.0), ("filter", 1.0)],
+        transitions: &[("echo_out", 3.0), ("slam", 3.0), ("filter", 1.0), ("backspin", 3.0), ("tape_stop", 2.0), ("rewind", 2.0)],
         arc: "hype",
     },
     Profile {
@@ -449,7 +466,7 @@ pub static PROFILES: &[Profile] = &[
         keywords: &["trap", "rage", "phonk", "drift phonk", "memphis"],
         artists: &["kordhell", "dvrst", "kslv noh", "ghostface playa", "baauer", "rl grime"],
         related: &["hiphop", "dubstep"],
-        transitions: &[("slam", 3.0), ("echo_out", 2.0)],
+        transitions: &[("slam", 3.0), ("echo_out", 2.0), ("backspin", 2.0), ("tape_stop", 2.0)],
         arc: "hype",
     },
     Profile {
@@ -535,7 +552,7 @@ pub static PROFILES: &[Profile] = &[
             "lifafa",
         ],
         related: &["rnb", "pop"],
-        transitions: &[("blend", 3.0), ("filter", 3.0), ("echo_out", 2.0)],
+        transitions: &[("blend", 3.0), ("filter", 3.0), ("echo_out", 2.0), ("tape_stop", 1.0)],
         arc: "chill",
     },
     Profile {

@@ -10,6 +10,7 @@ import type { SetPlan, SetTrack } from "@selecta/protocol";
 import type { Deck, DeckId, LoadedTrack } from "./deck";
 import type { Engine } from "./engine";
 import { matchRate, posOfBar } from "./grid";
+import { fire, type FxContext } from "./fx";
 import { scheduleTransition, type TransitionSchedule } from "./schedule";
 
 const LOOKAHEAD = 1.2; // seconds: enough to schedule a transition sample-accurately
@@ -19,6 +20,7 @@ export type ConductorEvent =
   | { type: "track"; index: number; deck: DeckId }
   | { type: "transition"; index: number; deck: DeckId; kind: string; rate: number }
   | { type: "postponed"; index: number }
+  | { type: "fx"; index: number; fx: string; reason: string }
   | { type: "end" }
   | { type: "error"; message: string };
 
@@ -43,11 +45,16 @@ export class Conductor {
   private pending: Pending | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ending = false;
+  /** Cue keys already fired for the current track ("index:position"). */
+  private fired = new Set<string>();
+  private readonly fx: FxContext;
 
   constructor(
     private readonly engine: Engine,
     private readonly host: ConductorHost,
-  ) {}
+  ) {
+    this.fx = { ctx: engine.ctx, master: engine.fxBus };
+  }
 
   get running(): boolean {
     return this.timer !== null;
@@ -64,6 +71,7 @@ export class Conductor {
     this.plan = plan;
     this.index = 0;
     this.loaded.clear();
+    this.fired.clear();
     this.ending = false;
     const first = plan.tracks[0]!;
     const deck = this.engine.decks.A;
@@ -138,6 +146,16 @@ export class Conductor {
     }
 
     const cur = plan.tracks[this.index]!;
+    // The director's cues for the playing track, scheduled within the lookahead.
+    cur.fx.forEach((cue, k) => {
+      const key = `${this.index}:${k}`;
+      if (this.fired.has(key)) return;
+      const t = live.timeOfBar(cue.bar);
+      if (t - now > LOOKAHEAD) return;
+      this.fired.add(key);
+      if (t < now - 0.05) return; // missed (e.g. after a seek): skip rather than fire late
+      if (fire(this.fx, cue.fx, { deck: live, at: t, beats: cue.beats })) this.host.onEvent?.({ type: "fx", index: this.index, fx: cue.fx, reason: cue.reason });
+    });
     const next = plan.tracks[this.index + 1];
     if (!next) {
       if (!this.ending && live.timeOfBar(cur.outBar) - now < LOOKAHEAD) this.finish(live, cur);
@@ -165,6 +183,8 @@ export class Conductor {
     const inn = out === this.engine.decks.A ? this.engine.decks.B : this.engine.decks.A;
     let trans = next.trans;
     const beatmatched = ["blend", "bassswap", "double_drop", "filter"].includes(trans.kind);
+    // Mid-track effects on the outgoing deck must not fight its exit move.
+    for (let k = 0; k < (plan.tracks[index - 1]?.fx.length ?? 0); k++) this.fired.add(`${index - 1}:${k}`);
     let rate = 1;
     if (beatmatched) {
       // Recomputed live from what the outgoing deck is really doing; beyond
@@ -182,6 +202,10 @@ export class Conductor {
     out.automate(sched.moves.filter((m) => m.side === "out"));
     inn.automate(sched.moves.filter((m) => m.side === "in"));
     if (sched.echo) out.echo(sched.echo.at, sched.echo.until, sched.echo.delaySec);
+    if (sched.exitFx) {
+      const beat = out.grid!.beat / out.rate;
+      fire(this.fx, sched.exitFx.id, { deck: out, at: sched.exitFx.at, beats: (sched.exitFx.until - sched.exitFx.at) / beat });
+    }
     inn.play(sched.startIn, posOfBar(inn.grid!, next.inBar));
     out.stop(sched.outEndsAt + 0.05);
     this.pending = { out, inn, index, sched, handedOver: false };

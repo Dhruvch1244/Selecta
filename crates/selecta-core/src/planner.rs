@@ -40,6 +40,14 @@ pub enum TransitionKind {
     EchoOut,
     /// Hard cut on a downbeat. Works across tempos.
     Slam,
+    /// Outgoing spins backwards to a stop; incoming drops on the next downbeat.
+    Backspin,
+    /// Outgoing slows to a halt like a powered-down turntable.
+    TapeStop,
+    /// "Pull up": the outgoing is wheeled back, then the incoming slams in.
+    Rewind,
+    /// Outgoing loop-rolls 1 -> 1/16 beat into the incoming's downbeat.
+    LoopRoll,
 }
 
 impl TransitionKind {
@@ -51,6 +59,10 @@ impl TransitionKind {
             "filter" => Self::Filter,
             "echo_out" => Self::EchoOut,
             "slam" => Self::Slam,
+            "backspin" => Self::Backspin,
+            "tape_stop" => Self::TapeStop,
+            "rewind" => Self::Rewind,
+            "loop_roll" => Self::LoopRoll,
             _ => return None,
         })
     }
@@ -98,6 +110,8 @@ pub struct SetTrack {
     /// How this track comes in over the previous one.
     pub trans: Transition,
     pub est_sec: f64,
+    /// Effects the director placed on this track, in track bars.
+    pub fx: Vec<crate::fx::FxCue>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -453,7 +467,13 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     let seq: Vec<&Work> = beams[0].0.iter().map(|i| &work[*i]).collect();
 
     // 3. Script.
-    let tracks = script(&seq, intent, &mut rng);
+    let mut tracks = script(&seq, intent, &mut rng);
+    // FX direction last: it needs every track's final cue points.
+    for i in 0..tracks.len() {
+        let until = tracks.get(i + 1).map(|n| n.trans.from_bar).unwrap_or(tracks[i].out_bar);
+        let genre = tracks[i].genre.clone();
+        tracks[i].fx = crate::fx::direct(seq[i].a(), genre.as_deref(), tracks[i].in_bar, until, intent.chaos, &mut rng);
+    }
     let mut out = tracks;
     let mut total = 0.0;
     for (st, w) in out.iter_mut().zip(&seq) {
@@ -559,7 +579,14 @@ fn pick_transition(p: &Work, t: &Work, compat: bool, prev: Option<TransitionKind
     }
     let beat_genre = prof.is_some_and(|g| g.beatmatch);
     for (k, w) in weights.iter_mut() {
-        if matches!(k, TransitionKind::Slam | TransitionKind::DoubleDrop) {
+        if matches!(
+            k,
+            TransitionKind::Slam
+                | TransitionKind::DoubleDrop
+                | TransitionKind::Backspin
+                | TransitionKind::Rewind
+                | TransitionKind::LoopRoll
+        ) {
             *w *= 0.4 + 1.4 * chaos;
         }
         if compat && beat_genre && !k.beatmatched() {
@@ -596,6 +623,7 @@ fn script(seq: &[&Work], intent: &Intent, rng: &mut Rng) -> Vec<SetTrack> {
             out_bar: a.bars.saturating_sub(1),
             trans: Transition { kind: TransitionKind::Start, from_bar: 0, len: 0, enter_at: 0, swap_at: None, echo_div: None },
             est_sec: 0.0,
+            fx: vec![],
         };
         if i == 0 {
             tempo = a.bpm;
@@ -661,7 +689,12 @@ fn script(seq: &[&Work], intent: &Intent, rng: &mut Rng) -> Vec<SetTrack> {
             st.in_bar = choose_in(w, true, intent, rng);
             let ob = choose_out(p, prev_in, prev_rate, 0);
             out[i - 1].out_bar = ob;
-            let pre = if kind == TransitionKind::EchoOut { 1 } else { 0 };
+            // Bars the outgoing's exit move takes before the incoming lands.
+            let pre = match kind {
+                TransitionKind::EchoOut | TransitionKind::Backspin | TransitionKind::TapeStop | TransitionKind::Rewind => 1,
+                TransitionKind::LoopRoll => 2,
+                _ => 0,
+            };
             st.trans = Transition {
                 kind,
                 from_bar: ob - pre,
