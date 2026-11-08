@@ -19,7 +19,7 @@ jobs:
     name: Rust core (no UI toolchain)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
@@ -33,7 +33,7 @@ jobs:
     name: UI + engine (lint, types, tests, build)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: 24, cache: npm }
       - run: npm ci
@@ -46,7 +46,7 @@ jobs:
     name: Desktop shell (Tauri)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Tauri system libraries
         run: |
           sudo apt-get update
