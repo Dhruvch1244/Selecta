@@ -52,3 +52,25 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
 - **Tauri 3 is alpha** (as of Nov 2026); this repo is on Tauri 2 stable.
 - **`pkill -f <name>` in a shell whose command line contains `<name>`**
   kills that shell. Use `pgrep -f '^node .*vite'` or kill by PID.
+
+## Dependencies
+
+- Dependabot opens weekly grouped PRs. Patch/minor groups **auto-merge** once
+  all required checks pass (`.github/workflows/dependabot-automerge.yml`);
+  nothing merges red because branch protection still applies.
+- **Majors are never auto-merged.** Read the changelog, check CI, test locally.
+- Two branches of a Dependabot PR touching adjacent lines conflict after the
+  first merges: comment `@dependabot rebase` instead of editing its branch.
+- Held back on purpose (in `dependabot.yml` `ignore`): TypeScript `>=6.1`
+  (typescript-eslint), `@types/node` majors (CI runs Node 24), Tauri majors
+  (3.x is alpha). Remove an ignore when its reason no longer holds.
+
+## Releases
+
+Bump `version` in `apps/desktop/src-tauri/tauri.conf.json` and
+`Cargo.toml` (workspace) via a PR, merge, then tag `main`:
+`git tag v0.x.y && git push origin v0.x.y`. The Release workflow builds
+Linux (AppImage/deb/rpm), Windows (NSIS) and macOS (universal dmg)
+installers and attaches them to a **draft** release; publish it after testing.
+Local build: `npm run build`; for just the AppImage:
+`cd apps/desktop && npx tauri build --bundles appimage`.
