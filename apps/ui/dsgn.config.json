@@ -67,6 +67,10 @@
     "src/components/dsgn/table.tsx": {
       "item": "table",
       "hash": "sha256:6a5efc41dfad0d171702d2531f7b38a9b8a2c5d1758d0ac537dd0793690f7e9c"
+    },
+    "src/components/dsgn/dialog.tsx": {
+      "item": "dialog",
+      "hash": "sha256:fe5e72b0371abf7b33063e4a17d238839c399029385b57355d537a5f57e65211"
     }
   }
 }

@@ -38,7 +38,7 @@ const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).p
  * clips meet.
  */
 export function SetPanel() {
-  const { plan, planning, playing, index, error, recent } = useSet();
+  const { plan, planning, playing, index, error, recent, progress } = useSet();
   const { build, play, stop, skip, open, refreshRecent } = useSet.getState();
   const [prompt, setPrompt] = React.useState("");
   const [minutes, setMinutes] = React.useState(0);
@@ -105,11 +105,22 @@ export function SetPanel() {
       </div>
 
       {error && <p role="alert" className="text-[11px] text-destructive">{error}</p>}
+      {planning && (
+        <p role="status" className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent" aria-hidden />
+          {progress.at(-1) ?? "Starting…"}
+        </p>
+      )}
 
       {plan ? (
         <>
           <div className="flex items-center gap-2">
             <span className="font-display text-[15px] font-semibold tracking-wide">{plan.title}</span>
+            {plan.curated && (
+              <span className="rounded-sm border border-accent/50 px-1.5 font-display text-[10px] uppercase tracking-wider text-accent" {...hintProps({ label: "Curated by Claude", value: "Tracks scored, vetoed and ordered from real song knowledge" })}>
+                AI curated
+              </span>
+            )}
             <span className="font-mono text-[11px] text-muted-foreground">
               {plan.tracks.length} tracks · {fmt(plan.estTotalSec)} · {plan.intent.energy} · chaos {Math.round(plan.intent.chaos * 100)}%
             </span>
@@ -135,13 +146,34 @@ export function SetPanel() {
               )}
             </div>
           </div>
+          {plan.intent.vibe && <p className="truncate text-[11px] italic text-muted-foreground">{plan.intent.vibe}</p>}
           <Timeline tracks={plan.tracks} current={playing ? index : -1} />
-          {plan.notes.length > 0 && <p className="truncate text-[11px] text-[var(--warm)]">{plan.notes.join(" ")}</p>}
+          <Notes notes={plan.notes} />
         </>
       ) : (
         <p className="py-3 text-center text-[11px] text-[var(--ink-faint)]">Describe a set and press Build. Selecta picks and orders tracks from your library by genre, key, tempo and an energy arc, then performs the transitions.</p>
       )}
     </Panel>
+  );
+}
+
+function Notes({ notes }: { notes: string[] }) {
+  const ideas = notes.filter((n) => n.startsWith("DJ idea · ")).map((n) => n.slice("DJ idea · ".length));
+  const other = notes.filter((n) => !n.startsWith("DJ idea · "));
+  if (!ideas.length && !other.length) return null;
+  return (
+    <div className="flex flex-col gap-0.5 text-[11px]">
+      {other.length > 0 && <p className="truncate text-[var(--warm)]">{other.join(" ")}</p>}
+      {ideas.length > 0 && (
+        <ul className="flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground" aria-label="DJ ideas from the curator">
+          {ideas.map((i) => (
+            <li key={i} className="truncate" {...hintProps({ label: "DJ idea", value: i })}>
+              <span className="text-accent">✦</span> {i}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

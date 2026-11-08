@@ -34,13 +34,14 @@ fn main() {
                 bpm: Some(a.bpm),
                 key: Some(a.key.clone()),
                 camelot: Some(a.camelot.clone()),
+                mood: None,
             };
-            Some(Candidate { genres: genres::classify("", &artist, p, Some(a.bpm)), track, analysis: a })
+            Some(Candidate { genres: genres::classify("", &artist, p, Some(a.bpm)), track, analysis: a, tags: None })
         })
         .collect();
     let artists: Vec<String> = cands.iter().map(|c| c.track.artist.clone()).collect();
     let it = intent::parse(&prompt, &artists);
-    let p = plan(&it, &cands, &Options { seed: 42, exclude: vec![] }).unwrap_or_else(|e| panic!("{e}"));
+    let p = plan(&it, &cands, &Options { seed: 42, exclude: vec![], curation: None }).unwrap_or_else(|e| panic!("{e}"));
     for t in &p.tracks {
         eprintln!(
             "{:<20} {:<26} {:>6.1}→{:>6.1} {:>4}  bars {:>3}-{:<3} {:?}",

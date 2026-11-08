@@ -33,11 +33,14 @@ interface State {
   tracks: TrackSummary[];
   scanning: boolean;
   analysing: { done: number; total: number } | null;
+  tagging: { done: number; total: number } | null;
   status: string;
   decks: Record<DeckId, DeckView>;
   refreshLibrary: () => Promise<void>;
   scan: () => Promise<void>;
   setMusicDirs: (dirs: string[]) => Promise<void>;
+  saveSettings: (s: Settings) => Promise<void>;
+  watchJobs: () => void;
   load: (deck: DeckId, track: TrackSummary) => Promise<void>;
   togglePlay: (deck: DeckId) => Promise<void>;
   cue: (deck: DeckId) => void;
@@ -53,6 +56,7 @@ export const useApp = create<State>((set, get) => {
     tracks: [],
     scanning: false,
     analysing: null,
+    tagging: null,
     status: "",
     decks: { A: emptyDeck(), B: emptyDeck() },
 
@@ -64,9 +68,15 @@ export const useApp = create<State>((set, get) => {
     },
 
     setMusicDirs: async (musicDirs) => {
-      await api.saveSettings({ musicDirs });
-      set({ settings: { musicDirs } });
+      const settings = { ...get().settings!, musicDirs };
+      await api.saveSettings(settings);
+      set({ settings });
       await get().scan();
+    },
+
+    saveSettings: async (settings) => {
+      await api.saveSettings(settings);
+      set({ settings });
     },
 
     scan: async () => {
@@ -75,22 +85,32 @@ export const useApp = create<State>((set, get) => {
         const r = await api.scan();
         set({ status: `Found ${r.found} files · ${r.added} new · ${r.updated} changed · ${r.removed} removed` });
         await get().refreshLibrary();
-        // Poll background analysis until the queue drains, refreshing as tracks land.
-        const poll = async () => {
-          const groups = await api.progress();
-          const g = groups.find((x) => x.group === "analysis");
-          set({ analysing: g ? { done: Number(g.done), total: Number(g.total) } : null });
-          if (g) {
-            if (Number(g.done) % 10 === 0) void get().refreshLibrary();
-            setTimeout(poll, 700);
-          } else void get().refreshLibrary();
-        };
-        void poll();
+        get().watchJobs();
       } catch (e) {
         set({ status: String(e instanceof Error ? e.message : e) });
       } finally {
         set({ scanning: false });
       }
+    },
+
+    /** Poll background analysis + AI tagging until both drain, refreshing as tracks land. */
+    watchJobs: () => {
+      const poll = async () => {
+        const groups = await api.progress().catch(() => []);
+        const pick = (name: string) => {
+          const g = groups.find((x) => x.group === name);
+          return g ? { done: Number(g.done), total: Number(g.total) } : null;
+        };
+        const analysing = pick("analysis");
+        const tagging = pick("tagging");
+        const before = get();
+        set({ analysing, tagging });
+        if (analysing || tagging) {
+          if ((analysing && analysing.done % 10 === 0) || (tagging && tagging.done !== before.tagging?.done)) void get().refreshLibrary();
+          setTimeout(poll, 800);
+        } else void get().refreshLibrary();
+      };
+      void poll();
     },
 
     load: async (id, track) => {

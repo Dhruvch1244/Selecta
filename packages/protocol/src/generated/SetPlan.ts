@@ -6,4 +6,8 @@ export type SetPlan = { id: string, created: number, title: string, prompt: stri
 /**
  * Target energy per position, for drawing the arc.
  */
-arc: Array<number>, notes: Array<string>, };
+arc: Array<number>, notes: Array<string>, 
+/**
+ * True when the AI curated this set.
+ */
+curated: boolean, };

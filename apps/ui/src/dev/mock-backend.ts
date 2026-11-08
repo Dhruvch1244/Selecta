@@ -20,7 +20,7 @@ export async function installMockBackend(): Promise<void> {
     const [artist, title] = file.replace(/\.[^.]+$/, "").split(" - ");
     const id = `mock${i}`;
     byId.set(id, f);
-    return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot };
+    return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot, mood: null };
   });
   // plan.json comes from `--example plan`; re-key its tracks to the mock ids/paths.
   const rawPlan: { plan: SetPlan } | null = await fetch("/__fixtures__/plan.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
@@ -33,7 +33,12 @@ export async function installMockBackend(): Promise<void> {
     }
   }
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
-    settings_get: () => ({ musicDirs: ["/__fixtures__"] }),
+    settings_get: () => ({ musicDirs: ["/__fixtures__"], ai: { provider: "claude", model: "sonnet", binary: "claude", curate: true, tagLibrary: true } }),
+    ai_status: () => ({ available: true, provider: "claude", model: "sonnet", detail: "Using your Claude CLI (sonnet). (mock)" }),
+    ai_test: () => "sonnet answered in 3.2s: \"drop the bass\" (mock)",
+    library_tag: () => 0,
+    "plugin:event|listen": () => 1,
+    "plugin:event|unlisten": () => null,
     settings_set: () => null,
     library_tracks: () => tracks,
     library_scan: () => ({ found: tracks.length, added: 0, updated: 0, removed: 0 }),

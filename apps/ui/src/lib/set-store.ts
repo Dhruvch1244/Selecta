@@ -4,6 +4,7 @@
 
 import { Conductor, type ConductorEvent, type DeckId } from "@selecta/engine";
 import type { SetPlan, SetSummary } from "@selecta/protocol";
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, readAudio } from "./api";
 import { getEngine, useApp } from "./store";
@@ -11,6 +12,8 @@ import { getEngine, useApp } from "./store";
 interface SetState {
   plan: SetPlan | null;
   planning: boolean;
+  /** Live lines from the backend while a set is being planned. */
+  progress: string[];
   playing: boolean;
   index: number;
   leadDeck: DeckId | null;
@@ -63,6 +66,7 @@ export const useSet = create<SetState>((set, get) => {
   return {
     plan: null,
     planning: false,
+    progress: [],
     playing: false,
     index: 0,
     leadDeck: null,
@@ -71,7 +75,8 @@ export const useSet = create<SetState>((set, get) => {
 
     build: async (prompt, opts, reroll) => {
       if (!prompt.trim()) return set({ error: "Describe the set you want first." });
-      set({ planning: true, error: null });
+      set({ planning: true, error: null, progress: [] });
+      const unlisten = await listen<string>("plan-progress", (e) => set((s) => ({ progress: [...s.progress, e.payload] }))).catch(() => () => {});
       try {
         const plan = await api.planSet(prompt, { ...opts, ...(reroll ? { seed: Date.now() } : {}) });
         set({ plan, index: 0 });
@@ -80,6 +85,7 @@ export const useSet = create<SetState>((set, get) => {
       } catch (e) {
         set({ error: e instanceof Error ? e.message : String(e) });
       } finally {
+        unlisten();
         set({ planning: false });
       }
     },

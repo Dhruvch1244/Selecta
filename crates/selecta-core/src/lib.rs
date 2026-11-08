@@ -9,6 +9,7 @@ pub mod genres;
 pub mod intent;
 pub mod jobs;
 pub mod library;
+pub mod llm;
 pub mod planner;
 
 #[derive(Debug, thiserror::Error)]

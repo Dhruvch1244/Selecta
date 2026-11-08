@@ -114,12 +114,16 @@ pub struct SetPlan {
     /// Target energy per position, for drawing the arc.
     pub arc: Vec<f64>,
     pub notes: Vec<String>,
+    /// True when the AI curated this set.
+    pub curated: bool,
 }
 
 pub struct Candidate {
     pub track: TrackSummary,
     pub analysis: Analysis,
     pub genres: BTreeMap<String, f64>,
+    /// AI genre/mood/language tags, when the library has been tagged.
+    pub tags: Option<crate::llm::TrackTags>,
 }
 
 // ---------- small, well-understood helpers (pillar 7) ----------
@@ -207,6 +211,32 @@ fn tempo_score(a: f64, b: f64) -> f64 {
 pub struct Options {
     pub seed: u64,
     pub exclude: Vec<String>,
+    /// AI curation of `shortlist(...)`: weighed as data, never obeyed blindly.
+    pub curation: Option<crate::llm::Curation>,
+}
+
+/// The tracks worth showing a curator: anything with some genre fit, plus
+/// anything the rules couldn't classify at all (the AI may know it), best first.
+pub fn shortlist<'a>(intent: &Intent, library: &'a [Candidate], exclude: &[String], max: usize) -> Vec<&'a Candidate> {
+    let mut v: Vec<(&Candidate, f64)> = library
+        .iter()
+        .filter(|c| !exclude.contains(&c.track.id))
+        .map(|c| (c, fit(c, intent)))
+        .filter(|(c, f)| *f >= 0.1 || c.genres.is_empty())
+        .collect();
+    v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    v.into_iter().take(max).map(|(c, _)| c).collect()
+}
+
+/// Energy a curator's role implies; blended with the measured energy.
+fn role_energy(role: &str) -> Option<f64> {
+    Some(match role {
+        "opener" => 0.4,
+        "builder" => 0.65,
+        "peak" => 0.95,
+        "closer" => 0.6,
+        _ => return None,
+    })
 }
 
 struct Work<'a> {
@@ -215,6 +245,8 @@ struct Work<'a> {
     energy: f64,
     genre: Option<&'static Profile>,
     est_play: f64,
+    /// Position in the curator's running order, 0..1.
+    rank: Option<f64>,
 }
 
 impl Work<'_> {
@@ -301,9 +333,35 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     if scored.is_empty() {
         return Err("No analysed tracks yet: add a music folder and let analysis finish.".into());
     }
+    let cur = opts.curation.as_ref();
+    if let Some(cur) = cur {
+        scored.retain(|(c, _)| !cur.avoid.contains(&c.track.id));
+        for (c, f) in scored.iter_mut() {
+            if let Some(sc) = cur.scores.get(&c.track.id) {
+                // Keep the explicit-artist boost (fit > 1) on top of the blend.
+                *f = 0.35 * f.min(1.0) + 0.65 * sc / 10.0 + if *f > 1.0 { 1.0 } else { 0.0 };
+            }
+        }
+        if scored.is_empty() {
+            return Err("The AI curator vetoed every track for this prompt; try a different vibe.".into());
+        }
+    }
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     let need = intent.duration_min * 60.0 / 100.0;
-    let mut pool: Vec<(&Candidate, f64)> = scored.iter().filter(|s| s.1 >= 0.45).cloned().collect();
+    let mut pool: Vec<(&Candidate, f64)> = match cur {
+        Some(cur) => {
+            let picked: Vec<_> = scored.iter().filter(|(c, _)| cur.scores.get(&c.track.id).is_some_and(|s| *s >= 5.0)).cloned().collect();
+            let mut p = picked;
+            if (p.len() as f64) < need {
+                // Top up with the rules' strong matches the curator didn't veto.
+                let extra: Vec<_> =
+                    scored.iter().filter(|s| s.1 >= 0.45 && !p.iter().any(|q| q.0.track.id == s.0.track.id)).cloned().collect();
+                p.extend(extra.into_iter().take(need.ceil() as usize + 2 - p.len().min(need.ceil() as usize + 2)));
+            }
+            p
+        }
+        None => scored.iter().filter(|s| s.1 >= 0.45).cloned().collect(),
+    };
     if (pool.len() as f64) < need {
         let more: Vec<_> = scored.iter().filter(|s| (0.15..0.45).contains(&s.1)).cloned().collect();
         if !more.is_empty() {
@@ -330,7 +388,16 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
         .map(|(c, f)| {
             let genre = primary_genre(c, intent);
             let (lo, hi) = genre.map(|g| g.play).unwrap_or((80.0, 150.0));
-            Work { c, fit: *f, energy: energy[&c.track.id], genre, est_play: (c.analysis.duration * 0.85).min((lo + hi) / 2.0 * pace) }
+            let id = &c.track.id;
+            let mut e = energy[id];
+            if let Some(r) = cur.and_then(|k| k.roles.get(id)).and_then(|r| role_energy(r)) {
+                e = 0.55 * e + 0.45 * r;
+            }
+            let rank = cur.and_then(|k| {
+                let i = k.order.iter().position(|x| x == id)?;
+                Some(i as f64 / (k.order.len().max(2) - 1) as f64)
+            });
+            Work { c, fit: *f, energy: e, genre, est_play: (c.analysis.duration * 0.85).min((lo + hi) / 2.0 * pace), rank }
         })
         .collect();
     let mean_play = work.iter().map(|w| w.est_play).sum::<f64>() / work.len() as f64;
@@ -341,6 +408,10 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
         let w = &work[t];
         let x = seq.len() as f64 / (n.max(2) - 1) as f64;
         let mut s = 1.3 * w.fit.min(1.2) + 1.1 * (1.0 - (2.0 * (w.energy - arc_at(&intent.arc, x)).abs()).min(1.0));
+        if let Some(r) = w.rank {
+            // The curator's running order is a guide, not a cage: key, tempo and arc still vote.
+            s += 0.9 * (1.0 - (2.5 * (r - x).abs()).min(1.0));
+        }
         if let Some(&p) = seq.last() {
             let pw = &work[p];
             let bm = pw.genre.is_some_and(|g| g.beatmatch) && w.genre.is_some_and(|g| g.beatmatch);
@@ -399,13 +470,14 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     Ok(SetPlan {
         id: format!("{:016x}", opts.seed ^ created.to_bits()),
         created,
-        title: intent.title.clone(),
+        title: cur.and_then(|c| c.title.clone()).unwrap_or_else(|| intent.title.clone()),
         prompt: intent.prompt.clone(),
-        intent: intent.clone(),
+        intent: Intent { vibe: cur.and_then(|c| c.vibe.clone()).or_else(|| intent.vibe.clone()), ..intent.clone() },
         tracks: out,
         est_total_sec: (total * 10.0).round() / 10.0,
         arc: (0..len).map(|i| (arc_at(&intent.arc, i as f64 / (len.max(2) - 1) as f64) * 1000.0).round() / 1000.0).collect(),
-        notes,
+        notes: notes.into_iter().chain(cur.into_iter().flat_map(|c| c.moments.iter().map(|m| format!("DJ idea · {m}")))).collect(),
+        curated: cur.is_some(),
     })
 }
 
@@ -646,9 +718,11 @@ mod tests {
                         bpm: Some(a.bpm),
                         key: Some(a.key.clone()),
                         camelot: Some(a.camelot.clone()),
+                        mood: None,
                     },
                     genres: genres::classify(tag, artist, "", Some(a.bpm)),
                     analysis: a,
+                    tags: None,
                 }
             })
             .collect()
@@ -658,7 +732,7 @@ mod tests {
     fn dnb_set_is_on_genre_beatmatched_and_phrase_aligned() {
         let lib = library();
         let it = intent::parse("crazy dnb set 10 min", &[]);
-        let p = plan(&it, &lib, &Options { seed: 7, exclude: vec![] }).unwrap();
+        let p = plan(&it, &lib, &Options { seed: 7, exclude: vec![], curation: None }).unwrap();
         assert!(p.tracks.len() >= 3, "{} tracks", p.tracks.len());
         for t in &p.tracks {
             assert_eq!(t.genre.as_deref(), Some("dnb"), "{} is {:?}", t.title, t.genre);
@@ -680,8 +754,8 @@ mod tests {
     fn same_seed_same_plan_different_seed_can_differ() {
         let lib = library();
         let it = intent::parse("dnb", &[]);
-        let a = plan(&it, &lib, &Options { seed: 1, exclude: vec![] }).unwrap();
-        let b = plan(&it, &lib, &Options { seed: 1, exclude: vec![] }).unwrap();
+        let a = plan(&it, &lib, &Options { seed: 1, exclude: vec![], curation: None }).unwrap();
+        let b = plan(&it, &lib, &Options { seed: 1, exclude: vec![], curation: None }).unwrap();
         assert_eq!(a.tracks, b.tracks);
     }
 
@@ -689,7 +763,7 @@ mod tests {
     fn artist_request_leads_and_cuts_across_tempos() {
         let lib = library();
         let it = intent::parse("Seedhe Maut hip hop set 6 min", &[]);
-        let p = plan(&it, &lib, &Options { seed: 3, exclude: vec![] }).unwrap();
+        let p = plan(&it, &lib, &Options { seed: 3, exclude: vec![], curation: None }).unwrap();
         assert!(p.tracks.iter().any(|t| t.artist == "Seedhe Maut"));
         for t in p.tracks.iter().skip(1) {
             if (t.bpm - 93.0).abs() > 10.0 && !t.trans.kind.beatmatched() {
@@ -701,7 +775,30 @@ mod tests {
     #[test]
     fn empty_library_is_a_clear_error() {
         let it = intent::parse("dnb", &[]);
-        assert!(plan(&it, &[], &Options { seed: 1, exclude: vec![] }).unwrap_err().contains("No analysed tracks"));
+        assert!(plan(&it, &[], &Options { seed: 1, exclude: vec![], curation: None }).unwrap_err().contains("No analysed tracks"));
+    }
+
+    #[test]
+    fn curation_vetoes_scores_and_orders() {
+        let lib = library();
+        let it = intent::parse("dnb set 8 min", &[]);
+        let id = |t: &str| lib.iter().find(|c| c.track.title == t).unwrap().track.id.clone();
+        let cur = crate::llm::Curation {
+            scores: [(id("Solar"), 10.0), (id("Watercolour"), 9.0), (id("Come Alive"), 8.0), (id("Liquid Sky"), 7.0)].into_iter().collect(),
+            roles: [(id("Liquid Sky"), "opener".to_string())].into_iter().collect(),
+            avoid: vec![id("Neuro Storm")],
+            order: vec![id("Liquid Sky"), id("Watercolour"), id("Come Alive"), id("Solar")],
+            title: Some("Curated Pressure".into()),
+            vibe: Some("rolling".into()),
+            moments: vec!["Solar: rewind the drop".into()],
+        };
+        let p = plan(&it, &lib, &Options { seed: 5, exclude: vec![], curation: Some(cur) }).unwrap();
+        assert!(p.curated);
+        assert_eq!(p.title, "Curated Pressure");
+        assert_eq!(p.intent.vibe.as_deref(), Some("rolling"));
+        assert!(p.tracks.iter().all(|t| t.title != "Neuro Storm"), "vetoed track must not appear");
+        assert!(p.notes.iter().any(|n| n.contains("rewind the drop")));
+        assert_eq!(p.tracks[0].title, "Liquid Sky", "the curator's opener should open");
     }
 
     #[test]
