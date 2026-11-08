@@ -50,8 +50,18 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
   `Result<Option<Packet>>`, and buffers expose `spec().rate()` and
   `copy_to_slice_interleaved`. See `crates/selecta-core/src/decode.rs`.
 - **Tauri 3 is alpha** (as of Nov 2026); this repo is on Tauri 2 stable.
-- **`pkill -f <name>` in a shell whose command line contains `<name>`**
-  kills that shell. Use `pgrep -f '^node .*vite'` or kill by PID.
+- **`pkill -f <name>` / `pgrep -f <pattern>` match the shell running them**
+  when its own command line contains the pattern, killing it. Find dev
+  servers by port instead: `ss -ltnp | grep :1420`, then kill that PID.
+- **No sound in the AppImage:** WebKitGTK plays Web Audio through GStreamer.
+  An AppImage carries its own GStreamer libraries, so it also has to bundle
+  the plugins (`bundle.linux.appimage.bundleMediaFramework: true`). Without
+  that you get "GStreamer element appsink/appsrc/autoaudiosink not found"
+  and silence. Building the AppImage **on Arch** additionally needs
+  `patchelf` and `GSTREAMER_PLUGINS_DIR=/usr/lib/gstreamer-1.0
+  GSTREAMER_HELPERS_DIR=/usr/lib/gstreamer-1.0` (the plugin guesses Debian
+  paths). On Arch, the native binary (`target/release/selecta-desktop`) uses
+  the system GStreamer and needs none of this.
 
 ## Dependencies
 
