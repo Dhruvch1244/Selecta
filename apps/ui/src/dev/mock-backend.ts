@@ -1,6 +1,7 @@
 // Dev-only stand-in for the Rust shell, so the UI can be built and checked
 // in a plain browser: `npm run dev:ui`, then open http://localhost:1420/?mock.
-// Fixtures live in apps/ui/public/__fixtures__/ (gitignored audio), made by:
+// Fixtures live in apps/ui/dev-fixtures/ (gitignored audio, served at /__fixtures__ by a dev-only
+// Vite middleware, never bundled), made by:
 //   cargo run --release -p selecta-core --example analyze -- *.mp3 > library.json
 // Never bundled: main.tsx only imports this when import.meta.env.DEV is true.
 
