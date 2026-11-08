@@ -1,0 +1,30 @@
+name: Dependabot auto-merge
+
+# Patch and minor dependency updates merge themselves once every required CI
+# check passes (branch protection still applies: nothing merges red). Major
+# updates are left open for a human to read the changelog first.
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: gh pr comment "$PR_URL" --body "Major update; left for manual review (changelog + local test) per the dependency policy."
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -3,11 +3,29 @@ updates:
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
-    groups: { npm: { patterns: ["*"] } }
+    groups:
+      # Patch/minor bumps arrive together and auto-merge on green CI
+      # (dependabot-automerge.yml). Majors come one per PR, for review.
+      npm-minor:
+        update-types: [minor, patch]
+    ignore:
+      # typescript-eslint 8.x supports TypeScript <6.1; TS 7 breaks `npm ci`.
+      # Lift this once typescript-eslint declares support (see CLAUDE.md).
+      - dependency-name: typescript
+        versions: [">=6.1"]
+      # Node types track the Node major CI runs (24), not the newest Node.
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
   - package-ecosystem: cargo
     directory: /
     schedule: { interval: weekly }
-    groups: { cargo: { patterns: ["*"] } }
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+    ignore:
+      # Tauri 3 is alpha; stay on 2.x until it ships stable.
+      - dependency-name: "tauri*"
+        update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
