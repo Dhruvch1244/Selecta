@@ -624,7 +624,22 @@ pub fn genres_of_artist(name: &str) -> Vec<&'static str> {
 
 /// Soft multi-label scores in 0..1. Evidence adds up; BPM only confirms.
 pub fn classify(tag_genre: &str, artist: &str, path: &str, bpm: Option<f64>) -> BTreeMap<String, f64> {
+    classify_with(tag_genre, artist, path, bpm, None)
+}
+
+/// As `classify`, plus AI tags as one more source of evidence (weight 0.85,
+/// just under a known artist: a model's guess shouldn't outvote the file's own tag).
+pub fn classify_with(
+    tag_genre: &str,
+    artist: &str,
+    path: &str,
+    bpm: Option<f64>,
+    tags: Option<&crate::llm::TrackTags>,
+) -> BTreeMap<String, f64> {
     let mut sc: BTreeMap<String, f64> = BTreeMap::new();
+    for (g, w) in tags.map(|t| &t.genres).into_iter().flatten() {
+        *sc.entry(g.clone()).or_default() += 0.85 * w;
+    }
     for (text, w) in [(pad(tag_genre), 0.7), (pad(&path.replace(['/', '\\'], " ")), 0.35)] {
         if text.trim().is_empty() {
             continue;

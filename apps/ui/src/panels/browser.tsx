@@ -22,6 +22,7 @@ export function Browser() {
   const settings = useApp((s) => s.settings);
   const scanning = useApp((s) => s.scanning);
   const analysing = useApp((s) => s.analysing);
+  const tagging = useApp((s) => s.tagging);
   const { scan, load, setMusicDirs } = useApp.getState();
   const [q, setQ] = React.useState("");
   const [scrollTop, setScrollTop] = React.useState(0);
@@ -77,6 +78,12 @@ export function Browser() {
             <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{analysing.done}/{analysing.total}</span>
           </div>
         )}
+        {tagging && (
+          <div className="flex items-center gap-2" {...hintProps({ label: "AI tagging", value: `${tagging.done} of ${tagging.total} tracks: genre, mood, language` })}>
+            <Progress value={(tagging.done / Math.max(1, tagging.total)) * 100} className="h-1" />
+            <span className="font-mono text-[10px] tabular-nums text-muted-foreground">AI {tagging.done}/{tagging.total}</span>
+          </div>
+        )}
         <div className="flex gap-1">
           <Button size="xs" variant="secondary" onClick={pickFolder} {...hintProps({ label: "Add a music folder" })}>
             Add folder
@@ -105,7 +112,7 @@ function TrackRow({ t, top, selected, onSelect, onLoad }: { t: TrackSummary; top
           onKeyDown={(e) => {
             if (e.key === "Enter") onLoad(e.shiftKey ? "B" : "A");
           }}
-          {...hintProps({ label: `${t.artist} – ${t.title}`, value: t.analyzed ? `${t.bpm?.toFixed(1)} BPM · ${t.key} (${t.camelot})` : "not analysed yet", keys: "Enter → A · Shift+Enter → B" })}
+          {...hintProps({ label: `${t.artist} – ${t.title}`, value: t.analyzed ? `${t.bpm?.toFixed(1)} BPM · ${t.key} (${t.camelot})${t.mood ? ` · ${t.mood}` : ""}` : "not analysed yet", keys: "Enter → A · Shift+Enter → B" })}
           style={{ top, height: 30 }}
           className={cn(
             "absolute inset-x-0 flex cursor-default items-center gap-2 border-b border-border/40 px-2 outline-none",
@@ -114,7 +121,10 @@ function TrackRow({ t, top, selected, onSelect, onLoad }: { t: TrackSummary; top
         >
           <div className="min-w-0 flex-1 leading-tight">
             <div className="truncate text-[12px] text-foreground">{t.title}</div>
-            <div className="truncate text-[10px] text-muted-foreground">{t.artist || "Unknown artist"}</div>
+            <div className="flex items-center gap-1 truncate text-[10px] text-muted-foreground">
+              <span className="truncate">{t.artist || "Unknown artist"}</span>
+              {t.mood && <span className="shrink-0 rounded-[2px] bg-muted px-1 text-[9px] uppercase tracking-wide">{t.mood}</span>}
+            </div>
           </div>
           <span className="w-10 text-right font-mono text-[11px] tabular-nums text-muted-foreground">{t.bpm ? t.bpm.toFixed(1) : "···"}</span>
           <span className="w-7 text-right font-mono text-[11px] text-[var(--cyan)]">{t.camelot ?? ""}</span>

@@ -17,4 +17,8 @@ chaos: number,
 /**
  * Energy-arc shape: rave | party | journey | hype | chill.
  */
-arc: string, durationMin: number, durationExplicit: boolean, title: string, };
+arc: string, durationMin: number, durationExplicit: boolean, title: string, 
+/**
+ * One-line description, filled in by the AI layer when available.
+ */
+vibe: string | null, };

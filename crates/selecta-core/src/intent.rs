@@ -36,6 +36,8 @@ pub struct Intent {
     pub duration_min: f64,
     pub duration_explicit: bool,
     pub title: String,
+    /// One-line description, filled in by the AI layer when available.
+    pub vibe: Option<String>,
 }
 
 const SYNONYMS: &[(&str, &[&str])] = &[
@@ -222,6 +224,7 @@ pub fn parse(prompt: &str, library_artists: &[String]) -> Intent {
         duration_min: dur.unwrap_or(if energy == Energy::Crazy { 45.0 } else { 30.0 }),
         duration_explicit: dur.is_some(),
         title: String::new(),
+        vibe: None,
     };
     it.title = title_for(&it, top.as_deref());
     it

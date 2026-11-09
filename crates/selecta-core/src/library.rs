@@ -16,6 +16,7 @@ use ts_rs::TS;
 
 use crate::analysis::{Analysis, ANALYSIS_VERSION};
 use crate::genres;
+use crate::llm::{TagRow, TrackTags};
 use crate::planner::{Candidate, SetPlan};
 use crate::Result;
 
@@ -36,6 +37,8 @@ pub struct TrackSummary {
     pub bpm: Option<f64>,
     pub key: Option<String>,
     pub camelot: Option<String>,
+    /// AI-tagged mood (party, sad, ...), when the library has been tagged.
+    pub mood: Option<String>,
 }
 
 #[derive(Serialize, TS, Clone, Debug)]
@@ -93,6 +96,12 @@ impl Library {
                id TEXT PRIMARY KEY, created REAL NOT NULL, title TEXT NOT NULL, prompt TEXT NOT NULL, plan TEXT NOT NULL
              );",
         )?;
+        // Migrations for libraries created by earlier versions: add columns, never drop data.
+        let cols: Vec<String> =
+            conn.prepare("PRAGMA table_info(tracks)")?.query_map([], |r| r.get::<_, String>(1))?.collect::<std::result::Result<_, _>>()?;
+        if !cols.iter().any(|c| c == "llm_tags") {
+            conn.execute("ALTER TABLE tracks ADD COLUMN llm_tags TEXT", [])?;
+        }
         Ok(Library { conn: Mutex::new(conn) })
     }
 
@@ -153,7 +162,8 @@ impl Library {
     pub fn tracks(&self) -> Result<Vec<TrackSummary>> {
         let conn = self.conn.lock().unwrap();
         let mut st = conn.prepare(
-            "SELECT id, path, artist, title, album, genre_tag, duration, analysis, analysis_mtime >= mtime AND analysis_version = ?1
+            "SELECT id, path, artist, title, album, genre_tag, duration, analysis, analysis_mtime >= mtime AND analysis_version = ?1,
+                    json_extract(llm_tags, '$.mood')
              FROM tracks ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE",
         )?;
         let rows = st.query_map([ANALYSIS_VERSION], |r| {
@@ -171,6 +181,7 @@ impl Library {
                 bpm: parsed.as_ref().and_then(|v| v["bpm"].as_f64()),
                 key: parsed.as_ref().and_then(|v| v["key"].as_str().map(String::from)),
                 camelot: parsed.as_ref().and_then(|v| v["camelot"].as_str().map(String::from)),
+                mood: r.get::<_, Option<String>>(9)?.filter(|m| !m.is_empty()),
             })
         })?;
         rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
@@ -198,11 +209,33 @@ impl Library {
         let mut out = Vec::with_capacity(analysed.len());
         for t in analysed {
             if let Some(a) = self.analysis(&t.id)? {
-                let genres = genres::classify(&t.genre_tag, &t.artist, &t.path, Some(a.bpm));
-                out.push(Candidate { track: t, analysis: a, genres });
+                let tags = self.tags(&t.id)?;
+                let genres = genres::classify_with(&t.genre_tag, &t.artist, &t.path, Some(a.bpm), tags.as_ref());
+                out.push(Candidate { track: t, analysis: a, genres, tags });
             }
         }
         Ok(out)
+    }
+
+    pub fn tags(&self, id: &str) -> Result<Option<TrackTags>> {
+        let conn = self.conn.lock().unwrap();
+        let s: Option<Option<String>> = conn.query_row("SELECT llm_tags FROM tracks WHERE id=?1", [id], |r| r.get(0)).optional()?;
+        Ok(s.flatten().and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    pub fn save_tags(&self, id: &str, t: &TrackTags) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE tracks SET llm_tags=?1 WHERE id=?2", params![serde_json::to_string(t)?, id])?;
+        Ok(())
+    }
+
+    /// Tracks the AI hasn't tagged yet: (id, artist, title, album, genre tag, bpm).
+    pub fn untagged(&self) -> Result<Vec<TagRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(
+            "SELECT id, artist, title, album, genre_tag, json_extract(analysis, '$.bpm') FROM tracks WHERE llm_tags IS NULL ORDER BY artist, title",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
+        rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
     }
 
     pub fn save_set(&self, p: &SetPlan) -> Result<()> {
@@ -331,6 +364,7 @@ mod tests {
             est_total_sec: 0.0,
             arc: vec![],
             notes: vec![],
+            curated: false,
         };
         lib.save_set(&plan).unwrap();
         assert_eq!(lib.sets().unwrap()[0].id, "abc");
@@ -358,6 +392,13 @@ mod tests {
         let t = &lib.tracks().unwrap()[0];
         assert_eq!((t.artist.as_str(), t.title.as_str(), t.genre_tag.as_str()), ("Pendulum", "Watercolour", "DnB"));
         assert_eq!(lib.scan(std::slice::from_ref(&dir)).unwrap().added, 0, "unchanged files are skipped");
+        let id = t.id.clone();
+        assert_eq!(lib.untagged().unwrap().len(), 1);
+        let tags = TrackTags { genres: [("dnb".to_string(), 1.0)].into_iter().collect(), mood: "uplifting".into(), lang: "en".into() };
+        lib.save_tags(&id, &tags).unwrap();
+        assert_eq!(lib.tags(&id).unwrap(), Some(tags));
+        assert!(lib.untagged().unwrap().is_empty());
+        assert_eq!(lib.tracks().unwrap()[0].mood.as_deref(), Some("uplifting"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

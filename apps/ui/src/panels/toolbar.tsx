@@ -5,6 +5,7 @@ import { Meter } from "@/components/studio/meter";
 import { onFrame } from "@/lib/frame";
 import { hintProps } from "@/lib/hint";
 import { getEngine, peekEngine, useApp } from "@/lib/store";
+import { SettingsDialog } from "./settings-dialog";
 
 /**
  * Top bar, FL-style: app menu, master tempo/time/key LCDs for whichever deck
@@ -17,6 +18,8 @@ export function Toolbar() {
   const key = React.useRef<HTMLSpanElement>(null);
   const lat = React.useRef<HTMLSpanElement>(null);
   const [theme, setTheme] = React.useState(() => document.documentElement.dataset.theme ?? "dark");
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const ai = useApp((s) => s.settings?.ai);
   const readMaster = React.useCallback(() => peekEngine()?.master ?? null, []);
 
   React.useEffect(
@@ -49,12 +52,15 @@ export function Toolbar() {
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-card px-2 shadow-ambient">
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       <DropdownMenu>
         <DropdownMenuTrigger className="flex h-8 items-center gap-2 rounded-sm px-2 outline-none hover:bg-muted focus-visible:ring-1 focus-visible:ring-ring" {...hintProps({ label: "Selecta menu" })}>
           <Logo />
           <span className="font-display text-[15px] font-semibold uppercase tracking-[0.18em]">Selecta</span>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
+          <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>Settings…</DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuLabel>Library</DropdownMenuLabel>
           <DropdownMenuItem onSelect={() => void useApp.getState().scan()}>Rescan music folders</DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -73,6 +79,11 @@ export function Toolbar() {
         <div className="flex h-full items-center gap-1" {...hintProps({ label: "Master output" })}>
           <Meter label="Master" read={readMaster} className="w-2" />
         </div>
+        <button type="button" onClick={() => setSettingsOpen(true)} className="text-left" aria-label="AI settings">
+          <Lcd label="AI" width="w-20" hint={ai?.provider === "claude" ? `Claude CLI (${ai.model}). Click for settings` : "Off: rules only. Click for settings"}>
+            {ai?.provider === "claude" ? ai.model : "off"}
+          </Lcd>
+        </button>
         <Lcd label="Latency" valueRef={lat} width="w-16" hint="Audio output latency you actually hear">-- ms</Lcd>
         <button
           type="button"

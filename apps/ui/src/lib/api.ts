@@ -2,11 +2,12 @@
 // apps/desktop/src-tauri/src/lib.rs; result types come from @selecta/protocol,
 // generated from the Rust structs, so a renamed field is a type error here.
 
-import type { Analysis, GroupProgress, ScanReport, SetPlan, SetSummary, TrackSummary } from "@selecta/protocol";
+import type { AiConfig, AiStatus, Analysis, GroupProgress, ScanReport, SetPlan, SetSummary, TrackSummary } from "@selecta/protocol";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export interface Settings {
   musicDirs: string[];
+  ai: AiConfig;
 }
 
 export const inTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -27,6 +28,9 @@ export const api = {
   sets: () => call<SetSummary[]>("sets_list"),
   set: (id: string) => call<SetPlan>("set_get", { id }),
   deleteSet: (id: string) => call<void>("set_delete", { id }),
+  aiStatus: () => call<AiStatus>("ai_status"),
+  aiTest: () => call<string>("ai_test"),
+  tagLibrary: () => call<number>("library_tag"),
 };
 
 /** Raw bytes of a library file, read through Tauri's scoped asset protocol. */
