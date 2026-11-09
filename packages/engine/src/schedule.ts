@@ -47,6 +47,15 @@ export function scheduleTransition(t: Transition, barTime: (bar: number) => numb
   const tEnd = barTime(t.fromBar + t.len);
   const moves: Move[] = [];
   const m = (side: Side, target: Target, at: number, value: number, until?: number) => moves.push({ side, target, at, value, ...(until !== undefined ? { until } : {}) });
+  const beatSec = barSec / 4;
+
+  // One singer at a time: the outgoing vocal stem ducks out over the half
+  // beat before its bar (a no-op on a track without stems).
+  if (t.voxOut !== null && t.voxOut !== undefined) {
+    const tv = barTime(t.voxOut);
+    m("out", "vox", tv - beatSec / 2, 1);
+    m("out", "vox", tv - beatSec / 2, 0, tv);
+  }
 
   switch (t.kind) {
     case "blend":
@@ -75,6 +84,43 @@ export function scheduleTransition(t: Transition, barTime: (bar: number) => numb
       m("out", "fader", tEnd - fadeLen, 1);
       m("out", "fader", tEnd - fadeLen, 0, tEnd);
       return { kind: t.kind, startIn: tEnter, handoverAt: swap, outEndsAt: tEnd, moves };
+    }
+    case "acapella_build":
+    case "bootleg": {
+      // The incoming plays as an acapella over the outgoing (now an
+      // instrumental bed), and its own beat drops in on the swap downbeat,
+      // where the outgoing is cut with a short echo tail.
+      const swap = barTime(t.swapAt ?? t.fromBar + t.len);
+      m("in", "fader", tEnter, 1);
+      m("in", "inst", tEnter, 0);
+      m("in", "vox", tEnter, 0);
+      m("in", "vox", tEnter, 1, tEnter + beatSec);
+      m("in", "inst", swap, 1);
+      m("out", "fader", swap - 0.004, 1);
+      m("out", "fader", swap - 0.004, 0, swap);
+      return {
+        kind: t.kind,
+        startIn: tEnter,
+        handoverAt: swap,
+        outEndsAt: swap + 0.05,
+        moves,
+        echo: { at: swap - beatSec, until: swap, delaySec: (t.echoDiv ?? 0.125) * barSec },
+      };
+    }
+    case "mashup": {
+      // Both drops land together: the outgoing keeps its beat and bass (its
+      // vocal is muted by voxOut), the incoming brings its vocal and top end
+      // with the low band killed. The bass changes hands 4 bars from the end.
+      const drop = barTime(t.swapAt ?? t.enterAt);
+      m("in", "fader", tEnter, 0);
+      m("in", "fader", tEnter, 1, tEnter + Math.max(beatSec, Math.min(4 * barSec, (drop - tEnter) * 0.5)));
+      m("in", "low", tEnter, KILL_DB);
+      const bassAt = Math.max(drop, tEnd - 4 * barSec);
+      m("out", "low", bassAt, KILL_DB);
+      m("in", "low", bassAt, 0);
+      m("out", "fader", bassAt, 1);
+      m("out", "fader", bassAt, 0, tEnd);
+      return { kind: t.kind, startIn: tEnter, handoverAt: drop, outEndsAt: tEnd, moves };
     }
     case "filter": {
       m("out", "hp", tEnter, 10);
@@ -106,7 +152,6 @@ export function scheduleTransition(t: Transition, barTime: (bar: number) => numb
     case "tape_stop":
     case "rewind":
     case "loop_roll": {
-      const beatSec = barSec / 4;
       // Backspins are short and land right before the downbeat; the others use the whole lead-in.
       const at = t.kind === "backspin" ? tEnter - 2 * beatSec : tFrom;
       const id = { backspin: "backspin:2", tape_stop: "tape_stop:2", rewind: "rewind:8", loop_roll: "roll_build:2" }[t.kind];

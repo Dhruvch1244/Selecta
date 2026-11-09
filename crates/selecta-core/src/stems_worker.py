@@ -56,10 +56,10 @@ def main():
             mu, sd = ref.mean(), ref.std() + 1e-8
             with torch.no_grad():
                 try:
-                    src = apply_model(model, ((wav - mu) / sd)[None], device=device, split=True, overlap=0.25, progress=False)[0]
+                    src = apply_model(model, ((wav - mu) / sd)[None], device=device, split=True, overlap=0.1, progress=False)[0]
                 except torch.cuda.OutOfMemoryError:
                     torch.cuda.empty_cache()
-                    src = apply_model(model, ((wav - mu) / sd)[None], device="cpu", split=True, overlap=0.25, progress=False)[0]
+                    src = apply_model(model, ((wav - mu) / sd)[None], device="cpu", split=True, overlap=0.1, progress=False)[0]
             voc = (src[vi] * sd + mu).cpu().numpy().T  # (n, 2)
             write_ogg(job["out"], voc, model.samplerate)
             hop = model.samplerate // 10

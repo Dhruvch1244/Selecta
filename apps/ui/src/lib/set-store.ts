@@ -12,6 +12,8 @@ import { getEngine, useApp } from "./store";
 
 interface SetState {
   plan: SetPlan | null;
+  /** The plan on screen is the instant rules draft; Claude's curated plan is still coming. */
+  draft: boolean;
   planning: boolean;
   /** Live lines from the backend while a set is being planned. */
   progress: string[];
@@ -65,6 +67,7 @@ export const useSet = create<SetState>((set, get) => {
 
   return {
     plan: null,
+    draft: false,
     planning: false,
     progress: [],
     playing: false,
@@ -75,11 +78,19 @@ export const useSet = create<SetState>((set, get) => {
 
     build: async (prompt, opts, reroll) => {
       if (!prompt.trim()) return set({ error: "Describe the set you want first." });
+      if (get().planning) return;
       set({ planning: true, error: null, progress: [] });
       const unlisten = await listen<string>("plan-progress", (e) => set((s) => ({ progress: [...s.progress, e.payload] }))).catch(() => () => {});
+      // The instant rules draft: shown (and playable) while the AI curates.
+      const unlistenDraft = await listen<SetPlan>("plan-draft", (e) => {
+        if (!get().planning || get().playing) return;
+        set({ plan: e.payload, draft: true, index: 0 });
+        useApp.getState().setStatus("Draft ready: press Play now, Claude's curation will take over when it lands.");
+      }).catch(() => () => {});
       try {
-        const plan = await api.planSet(prompt, { ...opts, ...(reroll ? { seed: Date.now() } : {}) });
-        set({ plan, index: 0 });
+        let plan = await api.planSet(prompt, { ...opts, ...(reroll ? { seed: Date.now() } : {}) });
+        if (get().draft && get().playing && conductor?.plan) plan = (await spliceIntoPlaying(plan)) ?? conductor.plan;
+        set({ plan, draft: false, index: get().playing ? get().index : 0 });
         // Separate this set's stems first, so its mashup moves have their vocals in time.
         void api.stemsPrioritise(plan.tracks.map((t) => t.id)).catch(() => {});
         useApp.getState().setStatus(`${plan.title}: ${plan.tracks.length} tracks, about ${Math.round(plan.estTotalSec / 60)} min.`);
@@ -88,7 +99,8 @@ export const useSet = create<SetState>((set, get) => {
         set({ error: e instanceof Error ? e.message : String(e) });
       } finally {
         unlisten();
-        set({ planning: false });
+        unlistenDraft();
+        set({ planning: false, draft: false });
       }
     },
 
@@ -118,6 +130,32 @@ export const useSet = create<SetState>((set, get) => {
     skip: () => void conductor?.skip(),
   };
 });
+
+/**
+ * The curated plan arrived while the draft is playing: keep everything up to
+ * the next (already loading) track, re-script the curator's order after it,
+ * and hand the result to the conductor. Returns the plan now playing, or
+ * null if the conductor moved on in the meantime (the draft keeps playing).
+ */
+async function spliceIntoPlaying(final: SetPlan): Promise<SetPlan | null> {
+  const c = conductor;
+  if (!c?.plan) return null;
+  const k = Math.min(c.index + 1, c.plan.tracks.length - 1);
+  const locked = c.plan.tracks.slice(0, k + 1);
+  const ids = new Set(locked.map((t) => t.id));
+  const rest = final.tracks.map((t) => t.id).filter((id) => !ids.has(id));
+  try {
+    const tail = await api.planSplice(final.intent, locked[k]!, rest);
+    const merged: SetPlan = { ...final, tracks: [...locked.slice(0, k), ...tail] };
+    merged.estTotalSec = merged.tracks.reduce((s, t) => s + t.estSec, 0);
+    if (!c.adopt(structuredClone(merged), k)) return null;
+    useApp.getState().setStatus(`Claude's curation took over after “${locked[k]!.title}”.`);
+    return merged;
+  } catch (e) {
+    console.warn("couldn't splice the curated plan in:", e);
+    return null;
+  }
+}
 
 /** Mirror conductor-loaded tracks into the deck lanes' header state. */
 function syncDeckView(id: DeckId, trackId: string, artist: string, title: string) {

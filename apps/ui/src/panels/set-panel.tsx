@@ -17,6 +17,8 @@ const CHIPS: [string, string][] = [
   ["Punjabi bangers", "punjabi party bangers"],
   ["House party", "house party, groovy tech house"],
   ["Liquid sunset", "chill liquid drum and bass for sunset"],
+  ["Rapid-fire DnB", "hedex style rapid fire dnb, double drops"],
+  ["Bollywood mashups", "bollywood mashups and bootlegs for friends"],
 ];
 
 const KIND_LABEL: Record<string, string> = {
@@ -31,7 +33,12 @@ const KIND_LABEL: Record<string, string> = {
   tape_stop: "TAPE STOP",
   rewind: "REWIND",
   loop_roll: "LOOP ROLL",
+  acapella_build: "ACAPELLA",
+  bootleg: "BOOTLEG",
+  mashup: "MASHUP",
 };
+/** Stem moves get the accent: they're the moments a set is remembered for. */
+const STEM_KINDS = new Set(["acapella_build", "bootleg", "mashup"]);
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 
@@ -42,7 +49,7 @@ const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).p
  * clips meet.
  */
 export function SetPanel() {
-  const { plan, planning, playing, index, error, recent, progress } = useSet();
+  const { plan, planning, playing, index, error, recent, progress, draft } = useSet();
   const { build, play, stop, skip, open, refreshRecent } = useSet.getState();
   const [prompt, setPrompt] = React.useState("");
   const [minutes, setMinutes] = React.useState(0);
@@ -123,6 +130,19 @@ export function SetPanel() {
             {plan.curated && (
               <span className="rounded-sm border border-accent/50 px-1.5 font-display text-[10px] uppercase tracking-wider text-accent" {...hintProps({ label: "Curated by Claude", value: "Tracks scored, vetoed and ordered from real song knowledge" })}>
                 AI curated
+              </span>
+            )}
+            {draft && (
+              <span
+                className="animate-pulse rounded-sm border border-border px-1.5 font-display text-[10px] uppercase tracking-wider text-muted-foreground"
+                {...hintProps({ label: "Instant draft", value: "Planned by the rules in a moment. Press Play now: Claude's curated order takes over from the next track when it's ready." })}
+              >
+                Draft · AI curating
+              </span>
+            )}
+            {plan.intent.rapid && (
+              <span className="rounded-sm border border-[var(--magenta)]/50 px-1.5 font-display text-[10px] uppercase tracking-wider text-[var(--magenta)]" {...hintProps({ label: "Rapid fire", value: "Quick mixing: ~40 bars a tune, drop to drop, lots of double drops" })}>
+                Rapid
               </span>
             )}
             <span className="font-mono text-[11px] text-muted-foreground">
@@ -225,7 +245,16 @@ function Timeline({ tracks, current }: { tracks: SetTrack[]; current: number }) 
             <span className="truncate text-[11px] font-medium text-foreground">{t.title}</span>
             <span className="flex items-center gap-1 truncate font-mono text-[9.5px] text-muted-foreground">
               {(t.bpm * t.rate).toFixed(0)} · {t.camelot}
-              {t.trans.kind !== "start" && <span className="truncate rounded-[2px] bg-background/60 px-1 font-display text-[9px] tracking-wider text-foreground">{KIND_LABEL[t.trans.kind]}</span>}
+              {t.trans.kind !== "start" && (
+                <span
+                  className={cn(
+                    "truncate rounded-[2px] px-1 font-display text-[9px] tracking-wider",
+                    STEM_KINDS.has(t.trans.kind) ? "bg-accent text-accent-foreground" : "bg-background/60 text-foreground",
+                  )}
+                >
+                  {KIND_LABEL[t.trans.kind]}
+                </span>
+              )}
             </span>
             <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5" style={{ background: `linear-gradient(90deg, transparent, ${deck} ${t.energy * 100}%, transparent ${t.energy * 100}%)` }} />
           </div>

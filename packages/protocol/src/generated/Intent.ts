@@ -21,4 +21,13 @@ arc: string, durationMin: number, durationExplicit: boolean, title: string,
 /**
  * One-line description, filled in by the AI layer when available.
  */
-vibe: string | null, };
+vibe: string | null, 
+/**
+ * Quick-mix pacing: ~30-45 s per track, drop to drop, lots of double
+ * drops ("hedex style", "quick mix", "rapid fire").
+ */
+rapid: boolean, 
+/**
+ * 0..1 appetite for stem moves (acapella builds, bootlegs, mashups).
+ */
+mashups: number, };
