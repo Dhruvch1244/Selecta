@@ -7,6 +7,7 @@ import type { Analysis } from "@selecta/protocol";
 import { Deck, type Band } from "./deck";
 import { loadLimiter } from "./engine";
 import { fire } from "./fx";
+import { shiftPitch } from "./keylock";
 import catalog from "../../protocol/src/generated/fx-catalog.json";
 
 const SR = 48000;
@@ -113,9 +114,14 @@ export interface SelfTestResult {
   expect: string;
 }
 
-export async function selfTest(): Promise<SelfTestResult[]> {
+/** `onResult` sees each check as it completes (the in-app runner streams them, so a hang shows where). */
+export async function selfTest(onResult?: (r: SelfTestResult) => void): Promise<SelfTestResult[]> {
   const r: SelfTestResult[] = [];
-  const add = (name: string, value: number, pass: boolean, expect: string) => r.push({ name, value: Math.round(value * 100) / 100, pass, expect });
+  const add = (name: string, value: number, pass: boolean, expect: string) => {
+    const x = { name, value: Math.round(value * 100) / 100, pass, expect };
+    r.push(x);
+    onResult?.(x);
+  };
   for (const f of [60, 150, 500, 1000, 4000, 10000]) {
     const g = await throughDeck(f);
     add(`isolator flat @ ${f} Hz (dB)`, g, Math.abs(g) <= 1.0, "within ±1 dB");
@@ -148,5 +154,55 @@ export async function selfTest(): Promise<SelfTestResult[]> {
     else bad.push(`${f.id}(fired=${res.fired} finite=${res.finite} peak=${res.peak.toFixed(2)} after=${res.afterDb.toFixed(1)}dB)`);
   }
   add(`effects render cleanly (${catalog.length})`, ok, ok === catalog.length, `all ${catalog.length}${bad.length ? `; failing: ${bad.join(", ")}` : ""}`);
+
+  // Keylock: +1 semitone on 440 Hz must give 466.16 Hz (and needs the WASM
+  // worklet to load, which a strict CSP can silently block in the app).
+  try {
+    const shifted = await shiftPitch(sine(new OfflineAudioContext(2, SR, SR), 440, 0.3, 4), 1);
+    const d = shifted.getChannelData(0);
+    let z = 0;
+    for (let i = SR + 1; i < 3 * SR; i++) if ((d[i - 1] ?? 0) < 0 && (d[i] ?? 0) >= 0) z++;
+    const hz = z / 2;
+    add("keylock +1 semitone on 440 Hz (Hz)", hz, Math.abs(hz - 466.16) < 2.5, "466.16 ± 2.5");
+  } catch (e) {
+    add(`keylock +1 semitone on 440 Hz (Hz): ${e instanceof Error ? e.message : e}`, 0, false, "466.16 ± 2.5");
+  }
+
+  // Stems: a 4-channel deck plays instrumental + vocals; each kill removes its half.
+  const stem = async (kill?: "vox" | "inst") => {
+    const ctx = new OfflineAudioContext(2, SR, SR);
+    const b = ctx.createBuffer(4, SR, SR);
+    for (let c = 0; c < 4; c++) {
+      const d = b.getChannelData(c);
+      for (let i = 0; i < SR; i++) d[i] = (c < 2 ? 0.5 : 0.25) * Math.sin((2 * Math.PI * 440 * i) / SR);
+    }
+    const deck = new Deck(ctx, "A", ctx.destination);
+    deck.load({ id: "s", artist: "", title: "", buffer: b, analysis: fakeAnalysis(1) });
+    if (kill) deck.setStem(kill, 0);
+    deck.play(0, 0);
+    return rms(await ctx.startRendering()) * Math.SQRT2;
+  };
+  const [both, noVox, noInst] = [await stem(), await stem("vox"), await stem("inst")];
+  const stemOk = Math.abs(both - 0.75) < 0.02 && Math.abs(noVox - 0.5) < 0.02 && Math.abs(noInst - 0.25) < 0.02;
+  add("stem kills: both / vox off / inst off (amplitude)", both, stemOk, `0.75 / 0.50 / 0.25, got ${both.toFixed(2)} / ${noVox.toFixed(2)} / ${noInst.toFixed(2)}`);
   return r;
+}
+
+/**
+ * Whether a real (not offline) AudioContext runs: its clock advances only
+ * when the platform audio output works (an AppImage without GStreamer
+ * plugins stayed silent here). Not part of selfTest(), which must work
+ * without audio hardware.
+ */
+export async function outputCheck(): Promise<SelfTestResult> {
+  const ctx = new AudioContext();
+  try {
+    await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 1000))]);
+    const t0 = ctx.currentTime;
+    await new Promise((r) => setTimeout(r, 400));
+    const adv = ctx.currentTime - t0;
+    return { name: `audio output clock advances (s in 0.4 s, state ${ctx.state})`, value: Math.round(adv * 100) / 100, pass: adv > 0.2, expect: "> 0.2" };
+  } finally {
+    void ctx.close();
+  }
 }

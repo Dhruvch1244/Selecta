@@ -18,4 +18,8 @@ trans: Transition, estSec: number,
 /**
  * Effects the director placed on this track, in track bars.
  */
-fx: Array<FxCue>, };
+fx: Array<FxCue>, 
+/**
+ * Semitones to shift this track's key (keylock on): -2..=2, 0 = as recorded.
+ */
+keyShift: number, };

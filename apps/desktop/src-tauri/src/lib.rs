@@ -34,6 +34,9 @@ struct Settings {
     /// Separate vocal stems in the background once the stem engine is installed.
     #[serde(default = "yes")]
     stems: bool,
+    /// Tempo changes keep the key, and sets may shift keys to mix harmonically.
+    #[serde(default = "yes")]
+    keylock: bool,
 }
 
 fn yes() -> bool {
@@ -168,6 +171,7 @@ struct PlanOptions {
 async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String, options: Option<PlanOptions>) -> Res<SetPlan> {
     let (lib, jobs) = (app.lib.clone(), app.jobs.clone());
     let ai = app.settings.lock().unwrap().ai.clone();
+    let keylock = app.settings.lock().unwrap().keylock;
     let o = options.unwrap_or_default();
     let rx = jobs
         .run_now(&format!("plan:{prompt}:{:?}", o.seed), move |_| -> Res<SetPlan> {
@@ -194,7 +198,7 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
                 // Never wait on the AI: a rules-only plan goes out now and can be
                 // played at once; the curated plan takes over when it lands
                 // (the UI splices it in after whatever is already playing).
-                if let Ok(mut draft) = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation: None }) {
+                if let Ok(mut draft) = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation: None, keylock }) {
                     draft.notes.insert(0, "Instant draft by the rules: playable now, Claude is still curating.".into());
                     let _ = handle.emit("plan-draft", &draft);
                 }
@@ -219,7 +223,7 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
                 }
             }
             say("Ordering by key, tempo and energy arc");
-            let mut plan = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation })?;
+            let mut plan = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation, keylock })?;
             plan.notes.extend(ai_notes);
             let pending = lib.needs_analysis().map_err(err)?.len();
             if pending > 0 {
@@ -241,9 +245,10 @@ async fn plan_splice(
     rest: Vec<String>,
 ) -> Res<Vec<planner::SetTrack>> {
     let lib = app.lib.clone();
+    let keylock = app.settings.lock().unwrap().keylock;
     blocking(move || {
         let cands = lib.candidates().map_err(err)?;
-        planner::rescript(&intent, &cands, &from, &rest, 0x5e1ec7a)
+        planner::rescript(&intent, &cands, &from, &rest, 0x5e1ec7a, keylock)
     })
     .await
 }
@@ -458,6 +463,28 @@ async fn now_playing(_np: Option<serde_json::Value>) -> Res<()> {
     Ok(())
 }
 
+/// `SELECTA_SELFTEST=1`: the UI runs the audio self-test in this webview and reports back.
+#[tauri::command(async)]
+async fn self_test_mode() -> Res<bool> {
+    Ok(std::env::var_os("SELECTA_SELFTEST").is_some())
+}
+
+#[tauri::command(async)]
+async fn self_test_log(line: String) -> Res<()> {
+    println!("{line}");
+    Ok(())
+}
+
+#[tauri::command(async)]
+async fn self_test_report(handle: tauri::AppHandle, lines: Vec<String>, ok: bool) -> Res<()> {
+    for l in &lines {
+        println!("{l}");
+    }
+    println!("{}", if ok { "SELF-TEST PASSED" } else { "SELF-TEST FAILED" });
+    handle.exit(if ok { 0 } else { 1 });
+    Ok(())
+}
+
 #[tauri::command(async)]
 async fn sets_list(app: State<'_, App>) -> Res<Vec<SetSummary>> {
     let lib = app.lib.clone();
@@ -513,6 +540,7 @@ pub fn run() {
                     music_dirs: app.path().audio_dir().ok().map(|d| vec![d.to_string_lossy().to_string()]).unwrap_or_default(),
                     ai: AiConfig::default(),
                     stems: true,
+                    keylock: true,
                 });
             allow_dirs(app.handle(), &settings.music_dirs);
             let lib = Arc::new(Library::open(&data.join("library.db")).map_err(|e| e.to_string())?);
@@ -547,6 +575,9 @@ pub fn run() {
             ai_status,
             ai_test,
             plan_splice,
+            self_test_mode,
+            self_test_report,
+            self_test_log,
             now_playing,
             stems_status,
             stems_install,

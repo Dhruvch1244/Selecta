@@ -347,6 +347,35 @@ export class Deck {
     return this.rev;
   }
 
+  /**
+   * Replace the playing audio with an equivalent buffer of the same length
+   * (a keylock render of this track), seamlessly: the new source picks up at
+   * exactly the position the old one is at, on the next beat.
+   */
+  swapBuffer(buffer: AudioBuffer): void {
+    const t = this.track;
+    if (!t || buffer.length !== t.buffer.length) return;
+    this.track = { ...t, buffer };
+    this.rev = null;
+    if (!this.src || this.stoppedAt !== Infinity) return;
+    const at = Math.max(this.ctx.currentTime + 0.05, this.busyUntil);
+    const pos = posAt(this.base, at);
+    this.vca.gain.cancelScheduledValues(at - DECLICK);
+    this.vca.gain.setValueAtTime(1, at - DECLICK);
+    this.vca.gain.linearRampToValueAtTime(0, at);
+    this.vca.gain.linearRampToValueAtTime(1, at + DECLICK);
+    this.src.stop(at);
+    const s = this.source(buffer);
+    s.start(at, Math.max(0, pos));
+    s.onended = () => {
+      if (this.src === s) {
+        this.src = null;
+        this.stoppedAt = Math.min(this.stoppedAt, this.ctx.currentTime);
+      }
+    };
+    this.src = s;
+  }
+
   /** Head of the deck's chain: playback sources connect here. */
   get input(): AudioNode {
     return this.vca;

@@ -132,6 +132,9 @@ pub struct SetTrack {
     pub est_sec: f64,
     /// Effects the director placed on this track, in track bars.
     pub fx: Vec<crate::fx::FxCue>,
+    /// Semitones to shift this track's key (keylock on): -2..=2, 0 = as recorded.
+    #[serde(default)]
+    pub key_shift: i32,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -212,6 +215,31 @@ pub fn arc_at(name: &str, x: f64) -> f64 {
     pts.last().unwrap().1
 }
 
+/// Camelot code of a key shifted by `semi` semitones: +7 semitones is one
+/// step clockwise on the wheel, so +1 semitone is 7 steps.
+pub fn shift_camelot(c: &str, semi: i32) -> String {
+    let (Some(n), Some(l)) = (c.get(..c.len().saturating_sub(1)).and_then(|s| s.parse::<i32>().ok()), c.chars().last()) else {
+        return c.to_string();
+    };
+    format!("{}{l}", (n - 1 + 7 * semi).rem_euclid(12) + 1)
+}
+
+/// The smallest key shift (|s| <= 2, keylock only) that makes `b` mix
+/// harmonically after `a`, with its score. 0 when none is needed or possible.
+pub fn best_key_shift(a: &str, b: &str, keylock: bool) -> (i32, f64) {
+    let base = camelot_score(a, b);
+    if !keylock || base >= 0.85 {
+        return (0, base);
+    }
+    for s in [1, -1, 2, -2] {
+        let sc = camelot_score(a, &shift_camelot(b, s));
+        if sc >= 0.85 {
+            return (s, sc);
+        }
+    }
+    (0, base)
+}
+
 pub fn camelot_score(a: &str, b: &str) -> f64 {
     let parse = |s: &str| -> Option<(i32, char)> { Some((s[..s.len() - 1].parse().ok()?, s.chars().last()?)) };
     let (Some((na, la)), Some((nb, lb))) = (parse(a), parse(b)) else { return 0.5 };
@@ -249,6 +277,9 @@ pub struct Options {
     pub exclude: Vec<String>,
     /// AI curation of `shortlist(...)`: weighed as data, never obeyed blindly.
     pub curation: Option<crate::llm::Curation>,
+    /// The engine will keylock (tempo changes keep pitch), so tracks may also
+    /// be key-shifted up to 2 semitones to mix harmonically.
+    pub keylock: bool,
 }
 
 /// The tracks worth showing a curator: anything with some genre fit, plus
@@ -415,7 +446,14 @@ fn finish(tracks: &mut [SetTrack], seq: &[&Work], intent: &Intent, rng: &mut Rng
 /// arrives while the instant draft is already playing: what the audience
 /// has heard stays, the rest follows the curator. The first returned track
 /// is `from` itself, with its new exit point and cues.
-pub fn rescript(intent: &Intent, library: &[Candidate], from: &SetTrack, rest: &[String], seed: u64) -> Result<Vec<SetTrack>, String> {
+pub fn rescript(
+    intent: &Intent,
+    library: &[Candidate],
+    from: &SetTrack,
+    rest: &[String],
+    seed: u64,
+    keylock: bool,
+) -> Result<Vec<SetTrack>, String> {
     let mut rng = Rng::new(seed);
     let find = |id: &str| library.iter().find(|c| c.track.id == id);
     let first = find(&from.id).ok_or("the playing track is no longer in the library")?;
@@ -423,7 +461,7 @@ pub fn rescript(intent: &Intent, library: &[Candidate], from: &SetTrack, rest: &
     pool.extend(rest.iter().filter(|id| **id != from.id).filter_map(|id| find(id)).map(|c| (c, fit(c, intent))));
     let work = make_works(intent, &pool, None);
     let seq: Vec<&Work> = work.iter().collect();
-    let mut tracks = script(&seq, intent, Some(from), &mut rng);
+    let mut tracks = script(&seq, intent, Some(from), keylock, &mut rng);
     finish(&mut tracks, &seq, intent, &mut rng);
     Ok(tracks)
 }
@@ -496,7 +534,10 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
         if let Some(&p) = seq.last() {
             let pw = &work[p];
             let bm = pw.genre.is_some_and(|g| g.beatmatch) && w.genre.is_some_and(|g| g.beatmatch);
-            s += 0.7 * camelot_score(&pw.a().camelot, &w.a().camelot) * if pw.genre.is_some_and(|g| g.beatmatch) { 1.0 } else { 0.6 };
+            // With keylock a clash can be fixed by a small key shift (a little worse than a natural match).
+            let (ks, key) = best_key_shift(&pw.a().camelot, &w.a().camelot, opts.keylock);
+            let key = key - 0.08 * ks.abs() as f64;
+            s += 0.7 * key * if pw.genre.is_some_and(|g| g.beatmatch) { 1.0 } else { 0.6 };
             s += if bm { 0.9 } else { 0.3 } * tempo_score(pw.a().bpm, w.a().bpm);
             let recent: Vec<String> = seq.iter().rev().take(3).map(|i| work[*i].c.track.artist.to_lowercase()).collect();
             let me = w.c.track.artist.to_lowercase();
@@ -534,7 +575,7 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     let seq: Vec<&Work> = beams[0].0.iter().map(|i| &work[*i]).collect();
 
     // 3. Script.
-    let mut out = script(&seq, intent, None, &mut rng);
+    let mut out = script(&seq, intent, None, opts.keylock, &mut rng);
     let total = finish(&mut out, &seq, intent, &mut rng);
     let len = out.len();
     let created = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
@@ -765,7 +806,7 @@ fn pick_transition(
     *rng.pick(&weights)
 }
 
-fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, rng: &mut Rng) -> Vec<SetTrack> {
+fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: bool, rng: &mut Rng) -> Vec<SetTrack> {
     let mut out: Vec<SetTrack> = vec![];
     let mut tempo = 0.0;
     for (i, w) in seq.iter().enumerate() {
@@ -795,6 +836,7 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, rng: &mut Rn
             },
             est_sec: 0.0,
             fx: vec![],
+            key_shift: 0,
         };
         if i == 0 {
             // A locked-in first track keeps its cue, rate and entry; only its exit is re-planned.
@@ -812,7 +854,11 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, rng: &mut Rn
         let either_bm = p.genre.is_some_and(|g| g.beatmatch) || w.genre.is_some_and(|g| g.beatmatch);
         let compat = (r - 1.0).abs() <= 0.08 && a.grid_conf > 2.0 && p.a().grid_conf > 2.0 && (either_bm || (r - 1.0).abs() <= 0.04);
         // Vocals over another track's harmony only work in compatible keys.
-        let stem_ok = p.c.vocals.is_some() && w.c.vocals.is_some() && camelot_score(&p.a().camelot, &a.camelot) >= 0.85;
+        let pa_key = p.a().camelot.clone();
+        // The outgoing's *heard* key: its own, plus any shift it was given.
+        let prev_key = shift_camelot(&pa_key, out[i - 1].key_shift);
+        let (ks, ksc) = best_key_shift(&prev_key, &a.camelot, keylock);
+        let stem_ok = p.c.vocals.is_some() && w.c.vocals.is_some() && ksc >= 0.85;
         let mut kind = pick_transition(p, w, compat, stem_ok, Some(out[i - 1].trans.kind), intent, rng);
         let pa = p.a();
 
@@ -919,6 +965,9 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, rng: &mut Rn
             }
         }
         st.rate = if kind.beatmatched() { (r * 1e5).round() / 1e5 } else { 1.0 };
+        // Keylock: shift the key when that's what makes this pair harmonic.
+        // Cuts don't need it (no overlap), so only overlapping moves shift.
+        st.key_shift = if kind.beatmatched() { ks } else { 0 };
         tempo = a.bpm * st.rate;
         out.push(st);
     }
@@ -982,7 +1031,7 @@ mod tests {
     fn dnb_set_is_on_genre_beatmatched_and_phrase_aligned() {
         let lib = library();
         let it = intent::parse("crazy dnb set 10 min", &[]);
-        let p = plan(&it, &lib, &Options { seed: 7, exclude: vec![], curation: None }).unwrap();
+        let p = plan(&it, &lib, &Options { seed: 7, exclude: vec![], curation: None, keylock: false }).unwrap();
         assert!(p.tracks.len() >= 3, "{} tracks", p.tracks.len());
         for t in &p.tracks {
             assert_eq!(t.genre.as_deref(), Some("dnb"), "{} is {:?}", t.title, t.genre);
@@ -1004,8 +1053,8 @@ mod tests {
     fn same_seed_same_plan_different_seed_can_differ() {
         let lib = library();
         let it = intent::parse("dnb", &[]);
-        let a = plan(&it, &lib, &Options { seed: 1, exclude: vec![], curation: None }).unwrap();
-        let b = plan(&it, &lib, &Options { seed: 1, exclude: vec![], curation: None }).unwrap();
+        let a = plan(&it, &lib, &Options { seed: 1, exclude: vec![], curation: None, keylock: false }).unwrap();
+        let b = plan(&it, &lib, &Options { seed: 1, exclude: vec![], curation: None, keylock: false }).unwrap();
         assert_eq!(a.tracks, b.tracks);
     }
 
@@ -1013,7 +1062,7 @@ mod tests {
     fn artist_request_leads_and_cuts_across_tempos() {
         let lib = library();
         let it = intent::parse("Seedhe Maut hip hop set 6 min", &[]);
-        let p = plan(&it, &lib, &Options { seed: 3, exclude: vec![], curation: None }).unwrap();
+        let p = plan(&it, &lib, &Options { seed: 3, exclude: vec![], curation: None, keylock: false }).unwrap();
         assert!(p.tracks.iter().any(|t| t.artist == "Seedhe Maut"));
         for t in p.tracks.iter().skip(1) {
             if (t.bpm - 93.0).abs() > 10.0 && !t.trans.kind.beatmatched() {
@@ -1041,7 +1090,7 @@ mod tests {
         let it = intent::parse("dnb mashups and bootlegs 20 min", &[]);
         let mut seen = std::collections::BTreeSet::new();
         for seed in 1..40 {
-            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None }).unwrap();
+            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: false }).unwrap();
             for w in p.tracks.windows(2) {
                 let (prev, t) = (&w[0], &w[1].trans);
                 if !t.kind.stems() {
@@ -1068,7 +1117,7 @@ mod tests {
         let lib: Vec<Candidate> = sung_dnb().into_iter().map(|c| Candidate { vocals: None, ..c }).collect();
         let it = intent::parse("dnb mashups and bootlegs 20 min", &[]);
         for seed in 1..20 {
-            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None }).unwrap();
+            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: false }).unwrap();
             assert!(p.tracks.iter().all(|t| !t.trans.kind.stems() && t.trans.vox_out.is_none()));
         }
     }
@@ -1077,7 +1126,7 @@ mod tests {
     fn rapid_plays_each_tune_for_less_time() {
         let lib = library();
         let per = |prompt: &str| {
-            let p = plan(&intent::parse(prompt, &[]), &lib, &Options { seed: 5, exclude: vec![], curation: None }).unwrap();
+            let p = plan(&intent::parse(prompt, &[]), &lib, &Options { seed: 5, exclude: vec![], curation: None, keylock: false }).unwrap();
             p.est_total_sec / p.tracks.len() as f64
         };
         let (normal, rapid) = (per("dnb set 10 min"), per("hedex style dnb 10 min"));
@@ -1088,7 +1137,7 @@ mod tests {
     fn rescript_keeps_the_locked_track_and_follows_the_new_order() {
         let lib = library();
         let it = intent::parse("dnb set 15 min", &[]);
-        let draft = plan(&it, &lib, &Options { seed: 11, exclude: vec![], curation: None }).unwrap();
+        let draft = plan(&it, &lib, &Options { seed: 11, exclude: vec![], curation: None, keylock: false }).unwrap();
         assert!(draft.tracks.len() >= 3);
         let locked = &draft.tracks[1];
         // The "curator" wants the remaining DnB tracks in reverse library order.
@@ -1098,7 +1147,7 @@ mod tests {
             .filter(|c| c.genres.get("dnb").copied().unwrap_or(0.0) > 0.5 && c.track.id != locked.id && c.track.id != draft.tracks[0].id)
             .map(|c| c.track.id.clone())
             .collect();
-        let tail = rescript(&it, &lib, locked, &rest, 3).unwrap();
+        let tail = rescript(&it, &lib, locked, &rest, 3, false).unwrap();
         assert_eq!(tail[0].id, locked.id);
         assert_eq!(
             (tail[0].in_bar, tail[0].rate, &tail[0].trans),
@@ -1114,9 +1163,61 @@ mod tests {
     }
 
     #[test]
+    fn key_shifts_move_around_the_camelot_wheel() {
+        assert_eq!(shift_camelot("8A", 0), "8A");
+        assert_eq!(shift_camelot("8A", 7), "9A", "a fifth up is one step clockwise");
+        assert_eq!(shift_camelot("8A", 1), "3A", "a semitone up is 7 steps");
+        assert_eq!(shift_camelot("12B", 1), "7B");
+        assert_eq!(shift_camelot("1A", -1), "6A");
+        assert_eq!(shift_camelot("?", 1), "?");
+        // 8A -> 3A clashes; shifting 3A down a semitone gives 8A.
+        assert_eq!(best_key_shift("8A", "3A", true), (-1, 1.0));
+        assert_eq!(best_key_shift("8A", "3A", false).0, 0, "no keylock, no shifting");
+        assert_eq!(best_key_shift("8A", "9A", true).0, 0, "already harmonic");
+    }
+
+    #[test]
+    fn keylock_sets_mix_harmonically_through_key_shifts() {
+        // Every DnB track in a different, mostly clashing key.
+        let keys = ["8A", "3A", "11B", "5A", "1B"];
+        let lib: Vec<Candidate> = library()
+            .into_iter()
+            .filter(|c| c.genres.get("dnb").copied().unwrap_or(0.0) > 0.5)
+            .enumerate()
+            .map(|(i, mut c)| {
+                c.analysis.camelot = keys[i % keys.len()].into();
+                c
+            })
+            .collect();
+        let it = intent::parse("dnb set 15 min", &[]);
+        let mut shifted = 0;
+        for seed in 1..12 {
+            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: true }).unwrap();
+            for w in p.tracks.windows(2) {
+                let (a, b) = (&w[0], &w[1]);
+                assert!(b.key_shift.abs() <= 2);
+                if b.trans.kind.beatmatched() {
+                    let heard = (shift_camelot(&a.camelot, a.key_shift), shift_camelot(&b.camelot, b.key_shift));
+                    if b.key_shift != 0 {
+                        shifted += 1;
+                        assert!(camelot_score(&heard.0, &heard.1) >= 0.85, "{heard:?}");
+                    }
+                } else {
+                    assert_eq!(b.key_shift, 0, "cuts don't shift keys");
+                }
+            }
+            let off = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: false }).unwrap();
+            assert!(off.tracks.iter().all(|t| t.key_shift == 0));
+        }
+        assert!(shifted > 0, "clashing keys should have been shifted at least once");
+    }
+
+    #[test]
     fn empty_library_is_a_clear_error() {
         let it = intent::parse("dnb", &[]);
-        assert!(plan(&it, &[], &Options { seed: 1, exclude: vec![], curation: None }).unwrap_err().contains("No analysed tracks"));
+        assert!(plan(&it, &[], &Options { seed: 1, exclude: vec![], curation: None, keylock: false })
+            .unwrap_err()
+            .contains("No analysed tracks"));
     }
 
     #[test]
@@ -1133,7 +1234,7 @@ mod tests {
             vibe: Some("rolling".into()),
             moments: vec!["Solar: rewind the drop".into()],
         };
-        let p = plan(&it, &lib, &Options { seed: 5, exclude: vec![], curation: Some(cur) }).unwrap();
+        let p = plan(&it, &lib, &Options { seed: 5, exclude: vec![], curation: Some(cur), keylock: false }).unwrap();
         assert!(p.curated);
         assert_eq!(p.title, "Curated Pressure");
         assert_eq!(p.intent.vibe.as_deref(), Some("rolling"));

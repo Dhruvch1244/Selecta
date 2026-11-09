@@ -43,7 +43,7 @@ fn main() {
         .collect();
     let artists: Vec<String> = cands.iter().map(|c| c.track.artist.clone()).collect();
     let it = intent::parse(&prompt, &artists);
-    let p = plan(&it, &cands, &Options { seed: 42, exclude: vec![], curation: None }).unwrap_or_else(|e| panic!("{e}"));
+    let p = plan(&it, &cands, &Options { seed: 42, exclude: vec![], curation: None, keylock: false }).unwrap_or_else(|e| panic!("{e}"));
     for t in &p.tracks {
         eprintln!(
             "{:<20} {:<26} {:>6.1}→{:>6.1} {:>4}  bars {:>3}-{:<3} {:?}",

@@ -36,5 +36,13 @@ export default defineConfig({
   },
   clearScreen: false,
   server: { port: 1420, strictPort: true, watch: { ignored: ["**/src-tauri/**"] } },
-  build: { target: "es2023", sourcemap: true },
+  build: {
+    target: "es2023",
+    sourcemap: true,
+    // AudioWorklet modules must stay real files. Under 4 KB Vite inlines them
+    // as data: URLs, which the app's CSP (rightly) refuses as scripts: every
+    // release build silently ran without the limiter and the bitcrusher, while
+    // dev and the browser, which serve files, measured fine.
+    assetsInlineLimit: (file) => (/worklets?\.js$/.test(file) ? false : undefined),
+  },
 });

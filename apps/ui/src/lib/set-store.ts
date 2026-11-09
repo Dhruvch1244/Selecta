@@ -117,7 +117,9 @@ export const useSet = create<SetState>((set, get) => {
       try {
         set({ playing: true, error: null });
         // The conductor mutates cue points (skips, postponements); give it its own copy.
-        await ensureConductor().start(structuredClone(plan));
+        const c = ensureConductor();
+        c.keylock = useApp.getState().settings?.keylock ?? true;
+        await c.start(structuredClone(plan));
       } catch (e) {
         set({ playing: false, error: e instanceof Error ? e.message : String(e) });
       }
