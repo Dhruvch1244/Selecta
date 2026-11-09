@@ -2,7 +2,7 @@
 // apps/desktop/src-tauri/src/lib.rs; result types come from @selecta/protocol,
 // generated from the Rust structs, so a renamed field is a type error here.
 
-import type { AiConfig, AiStatus, Analysis, GroupProgress, ScanReport, SetPlan, SetSummary, StemsStatus, TrackSummary } from "@selecta/protocol";
+import type { AiConfig, AiStatus, Analysis, GroupProgress, Intent, ScanReport, SetPlan, SetSummary, SetTrack, StemsStatus, TrackSummary } from "@selecta/protocol";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export interface Settings {
@@ -27,6 +27,7 @@ export const api = {
   analysis: (id: string) => call<Analysis>("track_analysis", { id }),
   progress: () => call<GroupProgress[]>("jobs_progress"),
   planSet: (prompt: string, options: { durationMin?: number; chaos?: number; seed?: number }) => call<SetPlan>("plan_set", { prompt, options }),
+  planSplice: (intent: Intent, from: SetTrack, rest: string[]) => call<SetTrack[]>("plan_splice", { intent, from, rest }),
   sets: () => call<SetSummary[]>("sets_list"),
   set: (id: string) => call<SetPlan>("set_get", { id }),
   deleteSet: (id: string) => call<void>("set_delete", { id }),

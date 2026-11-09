@@ -90,6 +90,25 @@ export class Conductor {
     this.timer = setInterval(() => this.tick(), TICK_MS);
   }
 
+  /**
+   * Swap in a new plan from track `from` onwards while playing (the AI's
+   * curated plan replacing the instant draft). Tracks up to `from` must be
+   * the same ones; `from`'s cue points may change (its exit), later tracks
+   * are replaced. Refused if the set already moved past `from`.
+   */
+  adopt(plan: SetPlan, from: number): boolean {
+    const cur = this.plan;
+    if (!cur || this.index > from || (this.pending && this.pending.index > from)) return false;
+    for (let i = 0; i <= from; i++) if (cur.tracks[i]?.id !== plan.tracks[i]?.id) return false;
+    // Same objects up to `from` (pending callbacks compare identity); fresh data.
+    Object.assign(cur.tracks[from]!, plan.tracks[from]);
+    cur.tracks.splice(from + 1, cur.tracks.length, ...plan.tracks.slice(from + 1));
+    Object.assign(cur, { ...plan, tracks: cur.tracks });
+    for (const i of [...this.loaded.keys()]) if (i > from) this.loaded.delete(i);
+    void this.prepare(this.index + 1).catch(() => {});
+    return true;
+  }
+
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
@@ -107,7 +126,7 @@ export class Conductor {
     const cur = plan.tracks[this.index]!;
     const next = plan.tracks[this.index + 1]!;
     cur.outBar = b + 1;
-    next.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25 };
+    next.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null };
   }
 
   private prepare(i: number): Promise<LoadedTrack> {
@@ -182,7 +201,12 @@ export class Conductor {
     const next = plan.tracks[index]!;
     const inn = out === this.engine.decks.A ? this.engine.decks.B : this.engine.decks.A;
     let trans = next.trans;
-    const beatmatched = ["blend", "bassswap", "double_drop", "filter"].includes(trans.kind);
+    const beatmatched = ["blend", "bassswap", "double_drop", "filter", "acapella_build", "bootleg", "mashup"].includes(trans.kind);
+    // A stem move needs stems on both decks (a stem can fail to load, or the
+    // plan predates a re-scan): degrade to the plain move with the same timing.
+    if (["acapella_build", "bootleg", "mashup"].includes(trans.kind) && (track.buffer.numberOfChannels < 4 || !out.hasStems)) {
+      trans = { ...trans, kind: trans.kind === "mashup" ? "double_drop" : "bassswap" };
+    }
     // Mid-track effects on the outgoing deck must not fight its exit move.
     for (let k = 0; k < (plan.tracks[index - 1]?.fx.length ?? 0); k++) this.fired.add(`${index - 1}:${k}`);
     let rate = 1;

@@ -21,4 +21,9 @@ swapAt: number | null,
 /**
  * Echo division as a fraction of a bar, for `echo_out`.
  */
-echoDiv: number | null, };
+echoDiv: number | null, 
+/**
+ * Outgoing-track bar where the outgoing's vocal stem is muted, so two
+ * vocals never clash (stem tracks only).
+ */
+voxOut: number | null, };

@@ -38,6 +38,13 @@ pub struct Intent {
     pub title: String,
     /// One-line description, filled in by the AI layer when available.
     pub vibe: Option<String>,
+    /// Quick-mix pacing: ~30-45 s per track, drop to drop, lots of double
+    /// drops ("hedex style", "quick mix", "rapid fire").
+    #[serde(default)]
+    pub rapid: bool,
+    /// 0..1 appetite for stem moves (acapella builds, bootlegs, mashups).
+    #[serde(default)]
+    pub mashups: f64,
 }
 
 const SYNONYMS: &[(&str, &[&str])] = &[
@@ -131,6 +138,43 @@ const PARTY: &[&str] = &[
     "night out",
 ];
 
+/// Quick-mix pacing. Hedex is the reference: a tune rarely plays a minute
+/// before the next one is dropped on top of it.
+const RAPID: &[&str] = &[
+    "hedex",
+    "rapid",
+    "rapid fire",
+    "quick mix",
+    "quick mixing",
+    "quickfire",
+    "quick fire",
+    "fast mix",
+    "fast mixing",
+    "fast cuts",
+    "quick cuts",
+    "chop",
+    "chopping",
+    "double drops",
+    "drop to drop",
+    "no waiting",
+];
+const MASHUP: &[&str] = &[
+    "mashup",
+    "mashups",
+    "mash up",
+    "bootleg",
+    "bootlegs",
+    "acapella",
+    "acapellas",
+    "a cappella",
+    "vocals over",
+    "vocal over",
+    "remix",
+    "edits",
+    "blend vocals",
+    "stems",
+];
+
 fn duration(text: &str) -> Option<f64> {
     let toks: Vec<&str> = text.split_whitespace().collect();
     for w in toks.windows(2) {
@@ -145,7 +189,7 @@ fn duration(text: &str) -> Option<f64> {
     let any = |ws: &[&str]| ws.iter().any(|p| has_phrase(text, p));
     if any(&["full set", "long set", "all night", "marathon"]) {
         Some(60.0)
-    } else if any(&["quick", "short", "mini"]) {
+    } else if any(&["quick", "short", "mini"]) && !any(RAPID) {
         Some(15.0)
     } else {
         None
@@ -194,11 +238,25 @@ pub fn parse(prompt: &str, library_artists: &[String]) -> Intent {
     } else {
         Energy::Normal
     };
-    let chaos = match energy {
+    let rapid = any(RAPID);
+    let mut chaos: f64 = match energy {
         Energy::Crazy => 0.9,
         Energy::Party => 0.65,
         Energy::Normal => 0.5,
         Energy::Chill => 0.18,
+    };
+    if rapid {
+        chaos = chaos.max(0.75);
+    }
+    let mashups = if any(MASHUP) {
+        0.9
+    } else {
+        match energy {
+            Energy::Crazy => 0.55,
+            Energy::Party => 0.5,
+            Energy::Normal => 0.35,
+            Energy::Chill => 0.15,
+        }
     };
     let top = genres.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(g, _)| g.clone());
     let arc = match energy {
@@ -225,7 +283,15 @@ pub fn parse(prompt: &str, library_artists: &[String]) -> Intent {
         duration_explicit: dur.is_some(),
         title: String::new(),
         vibe: None,
+        rapid,
+        mashups,
     };
+    // A style reference ("hedex style") with none of that artist's tracks
+    // in the library is about how to mix, not whose tunes to play.
+    let lib: Vec<String> = library_artists.iter().flat_map(|a| genres::split_artists(a)).collect();
+    if rapid {
+        it.artists.retain(|a| lib.iter().any(|l| l == a || l.contains(a.as_str())));
+    }
     it.title = title_for(&it, top.as_deref());
     it
 }
@@ -242,6 +308,12 @@ fn title_for(it: &Intent, top: Option<&str>) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         return format!("{lead} Takeover");
+    }
+    if it.rapid {
+        return format!("{label} Rapid Fire");
+    }
+    if it.mashups >= 0.9 {
+        return format!("{label} Mashup Mix");
     }
     let word = match it.energy {
         Energy::Crazy => "Pressure",
@@ -281,6 +353,27 @@ mod tests {
         assert!(it.genres.get("desi_hiphop").copied().unwrap_or(0.0) >= 0.9);
         assert_eq!(it.duration_min, 45.0);
         assert_eq!(it.title, "Seedhe Maut Takeover");
+    }
+
+    #[test]
+    fn hedex_style_is_rapid_dnb_not_an_artist_filter() {
+        let it = parse("hedex style double drops", &[]);
+        assert!(it.rapid);
+        assert!(it.genres.get("dnb").copied().unwrap_or(0.0) >= 0.9);
+        assert!(it.artists.is_empty(), "{:?}", it.artists);
+        assert_eq!(it.title, "Drum & Bass Rapid Fire");
+        assert!(!it.duration_explicit);
+        // ...but with Hedex tunes in the library, they're requested too.
+        let it = parse("hedex set", &["Hedex".into()]);
+        assert_eq!(it.artists, vec!["hedex".to_string()]);
+    }
+
+    #[test]
+    fn quick_mix_is_pacing_not_a_short_set() {
+        let it = parse("quick mix bollywood mashups for friends", &[]);
+        assert!(it.rapid);
+        assert_eq!(it.mashups, 0.9);
+        assert!(!it.duration_explicit, "'quick mix' must not mean a 15 min set");
     }
 
     #[test]

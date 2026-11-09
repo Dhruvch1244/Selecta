@@ -183,13 +183,23 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
             }
             let mut ai_notes = vec![];
             let ai_on = llm::status(&ai).available;
+            let seed = o.seed.unwrap_or_else(|| {
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
+            });
+            let cands = lib.candidates().map_err(err)?;
             if ai_on {
+                // Never wait on the AI: a rules-only plan goes out now and can be
+                // played at once; the curated plan takes over when it lands
+                // (the UI splices it in after whatever is already playing).
+                if let Ok(mut draft) = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation: None }) {
+                    draft.notes.insert(0, "Instant draft by the rules: playable now, Claude is still curating.".into());
+                    let _ = handle.emit("plan-draft", &draft);
+                }
                 say(&format!("Asking Claude ({}) to read the prompt", ai.model));
                 if let Err(e) = llm::refine_intent(&ai, &mut it) {
                     ai_notes.push(format!("AI couldn't read the prompt ({e}); used rules."));
                 }
             }
-            let cands = lib.candidates().map_err(err)?;
             let mut curation = None;
             if ai_on && ai.curate {
                 let wide = planner::shortlist(&it, &cands, &[], 300);
@@ -206,9 +216,6 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
                 }
             }
             say("Ordering by key, tempo and energy arc");
-            let seed = o.seed.unwrap_or_else(|| {
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
-            });
             let mut plan = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation })?;
             plan.notes.extend(ai_notes);
             let pending = lib.needs_analysis().map_err(err)?.len();
@@ -220,6 +227,22 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
         })
         .ok_or("Already planning that set.")?;
     blocking(move || rx.recv().map_err(|_| "planning was cancelled".to_string())?).await
+}
+
+/// Re-script the rest of a set after a locked-in track (see `planner::rescript`).
+#[tauri::command(async)]
+async fn plan_splice(
+    app: State<'_, App>,
+    intent: intent::Intent,
+    from: planner::SetTrack,
+    rest: Vec<String>,
+) -> Res<Vec<planner::SetTrack>> {
+    let lib = app.lib.clone();
+    blocking(move || {
+        let cands = lib.candidates().map_err(err)?;
+        planner::rescript(&intent, &cands, &from, &rest, 0x5e1ec7a)
+    })
+    .await
 }
 
 /// Tag every untagged track with the AI, 60 per call, one call at a time.
@@ -311,7 +334,11 @@ fn drain_stems(lib: &Arc<Library>, jobs: &Arc<Scheduler>, q: &Arc<StemQueue>, pa
                     }
                 }
                 let out = paths.vocals_file(&id);
-                match sep.as_mut().unwrap().vocals(&id, &path, &out) {
+                let res = sep.as_mut().unwrap().vocals(&id, &path, &out);
+                if let Some(s) = &sep {
+                    *q.device.lock().unwrap() = Some(s.device.clone());
+                }
+                match res {
                     Ok(env) => {
                         let _ = lib.save_stems(&id, &out, &env);
                     }
@@ -477,6 +504,7 @@ pub fn run() {
             library_tag,
             ai_status,
             ai_test,
+            plan_splice,
             stems_status,
             stems_install,
             stems_prioritise,
