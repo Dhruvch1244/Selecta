@@ -8,4 +8,8 @@ mood: string | null,
 /**
  * Why analysis failed, if it did (shown in the browser; retried when the file changes).
  */
-error: string | null, };
+error: string | null, 
+/**
+ * A current vocal stem exists (mashups, acapellas, vocal kills work).
+ */
+stems: boolean, };

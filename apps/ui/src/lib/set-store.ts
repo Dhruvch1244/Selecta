@@ -6,7 +6,8 @@ import { Conductor, type ConductorEvent, type DeckId } from "@selecta/engine";
 import type { SetPlan, SetSummary } from "@selecta/protocol";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { api, readAudio } from "./api";
+import { api } from "./api";
+import { loadTrackAudio } from "./track-audio";
 import { getEngine, useApp } from "./store";
 
 interface SetState {
@@ -56,11 +57,7 @@ export const useSet = create<SetState>((set, get) => {
 
   const ensureConductor = () => {
     conductor ??= new Conductor(getEngine(), {
-      loadTrack: async (t) => {
-        const eng = getEngine();
-        const [analysis, bytes] = await Promise.all([api.analysis(t.id), readAudio(t.path)]);
-        return { id: t.id, artist: t.artist, title: t.title, analysis, buffer: await eng.decode(bytes) };
-      },
+      loadTrack: (t) => loadTrackAudio(t),
       onEvent,
     });
     return conductor;
@@ -83,6 +80,8 @@ export const useSet = create<SetState>((set, get) => {
       try {
         const plan = await api.planSet(prompt, { ...opts, ...(reroll ? { seed: Date.now() } : {}) });
         set({ plan, index: 0 });
+        // Separate this set's stems first, so its mashup moves have their vocals in time.
+        void api.stemsPrioritise(plan.tracks.map((t) => t.id)).catch(() => {});
         useApp.getState().setStatus(`${plan.title}: ${plan.tracks.length} tracks, about ${Math.round(plan.estTotalSec / 60)} min.`);
         void get().refreshRecent();
       } catch (e) {
@@ -93,7 +92,11 @@ export const useSet = create<SetState>((set, get) => {
       }
     },
 
-    open: async (id) => set({ plan: await api.set(id), index: 0 }),
+    open: async (id) => {
+      const plan = await api.set(id);
+      set({ plan, index: 0 });
+      void api.stemsPrioritise(plan.tracks.map((t) => t.id)).catch(() => {});
+    },
     refreshRecent: async () => set({ recent: await api.sets().catch(() => []) }),
 
     play: async () => {

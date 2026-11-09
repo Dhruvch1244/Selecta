@@ -5,7 +5,7 @@
 
 import type { Transition, TransitionKind } from "@selecta/protocol";
 
-export type Target = "fader" | "low" | "high" | "hp" | "lp";
+export type Target = "fader" | "low" | "high" | "hp" | "lp" | "vox" | "inst";
 export type Side = "out" | "in";
 
 export interface Move {

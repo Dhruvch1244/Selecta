@@ -14,6 +14,7 @@ export type { Section } from "./generated/Section";
 export type { SetPlan } from "./generated/SetPlan";
 export type { SetSummary } from "./generated/SetSummary";
 export type { SetTrack } from "./generated/SetTrack";
+export type { StemsStatus } from "./generated/StemsStatus";
 export type { TrackSummary } from "./generated/TrackSummary";
 export type { TrackTags } from "./generated/TrackTags";
 export type { Transition } from "./generated/Transition";

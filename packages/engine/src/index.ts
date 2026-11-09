@@ -1,5 +1,6 @@
 export { Engine } from "./engine";
-export { Deck, EQ_KILL_DB, type Band, type DeckId, type LoadedTrack } from "./deck";
+export { Deck, EQ_KILL_DB, type Band, type DeckId, type LoadedTrack, type Stem } from "./deck";
+export { alignLag, buildStemChannels, stemBuffer } from "./stems";
 export * from "./grid";
 export * from "./meter";
 export { computeWaveform, type Waveform } from "./waveform";

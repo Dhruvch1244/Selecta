@@ -12,6 +12,9 @@ export interface Waveform {
 export function computeWaveform(channels: Float32Array[], sampleRate: number, fps = 100): Waveform {
   const a = channels[0] ?? new Float32Array(0);
   const b = channels[1] ?? a;
+  // Stem buffers (see stems.ts) carry instrumental + vocals; the display shows their sum, the track.
+  const c = channels[2];
+  const d = channels[3] ?? c;
   const per = Math.max(1, Math.floor(sampleRate / fps));
   const n = Math.floor(a.length / per);
   const peak = new Float32Array(n);
@@ -26,7 +29,8 @@ export function computeWaveform(channels: Float32Array[], sampleRate: number, fp
     let el = 0;
     let eh = 0;
     for (let k = 0; k < per; k++, j++) {
-      const x = 0.5 * ((a[j] ?? 0) + (b[j] ?? 0));
+      let x = 0.5 * ((a[j] ?? 0) + (b[j] ?? 0));
+      if (c && d) x += 0.5 * ((c[j] ?? 0) + (d[j] ?? 0));
       lp += kL * (x - lp);
       lp2 += kH * (x - lp2);
       const h = x - lp2;
