@@ -159,7 +159,7 @@ function StemsSection() {
     };
   }, [watchJobs]);
   if (!settings) return null;
-  const state = !st ? "…" : st.installing ? "Installing" : st.installed ? `Ready${st.device ? ` · ${st.device === "cuda" ? "GPU" : "CPU"}` : ""}` : "Not installed";
+  const state = !st ? "…" : st.installing ? "Installing" : st.installed ? `Ready${st.device ? ` · ${st.device.replace("cuda", "GPU").replace("cpu", "CPU")}` : ""}` : "Not installed";
   return (
     <Section title="Stems">
       <Row

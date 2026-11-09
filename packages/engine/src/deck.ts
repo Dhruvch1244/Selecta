@@ -32,7 +32,6 @@ export class Deck {
   readonly id: DeckId;
   track: LoadedTrack | null = null;
   wave: Waveform | null = null;
-  playing = false;
   meter: MeterState = newMeter();
 
   private readonly ctx: BaseAudioContext;
@@ -164,6 +163,14 @@ export class Deck {
   get hasStems(): boolean {
     return (this.track?.buffer.numberOfChannels ?? 0) >= 4;
   }
+  /**
+   * Audible right now. A deck whose stop is *scheduled* (the outgoing deck
+   * of a transition) is still playing until then: FX and the FX pad must
+   * keep working on it, and an earlier stop must still be able to reach it.
+   */
+  get playing(): boolean {
+    return this.src !== null && this.ctx.currentTime < this.stoppedAt;
+  }
   get rate(): number {
     return this.base.rate;
   }
@@ -174,6 +181,7 @@ export class Deck {
 
   load(track: LoadedTrack): void {
     this.stop();
+    this.src = null;
     if (track.buffer.numberOfChannels === 1) {
       // The stem path maps channels discretely, so a mono file must be made
       // stereo here or it would play on the left only.
@@ -213,8 +221,10 @@ export class Deck {
   }
 
   play(at = this.ctx.currentTime, from = this.position()): void {
-    if (!this.track || this.playing) return;
+    if (!this.track || (this.src && this.stoppedAt === Infinity)) return;
     const when = Math.max(at, this.ctx.currentTime);
+    // A previous scheduled stop's fade must not land on this playback.
+    this.vca.gain.cancelScheduledValues(when);
     this.base = { t: when, pos: from, rate: this.base.rate };
     const s = this.ctx.createBufferSource();
     s.buffer = this.track.buffer;
@@ -225,23 +235,27 @@ export class Deck {
     s.start(when, Math.max(0, from));
     s.onended = () => {
       if (this.src === s) {
-        this.playing = false;
-        this.stoppedAt = this.ctx.currentTime;
+        this.src = null;
+        this.stoppedAt = Math.min(this.stoppedAt, this.ctx.currentTime);
       }
     };
     this.src = s;
-    this.playing = true;
     this.stoppedAt = Infinity;
   }
 
   stop(at = this.ctx.currentTime): void {
     if (!this.src) return;
     const when = Math.max(at, this.ctx.currentTime);
+    if (when >= this.stoppedAt) return; // already stopping sooner
+    // Replaces any later scheduled stop (an earlier stop always wins).
+    this.vca.gain.cancelScheduledValues(when);
     this.vca.gain.setValueAtTime(1, when);
     this.vca.gain.linearRampToValueAtTime(0, when + DECLICK);
-    this.src.stop(when + DECLICK);
-    this.src = null;
-    this.playing = false;
+    try {
+      this.src.stop(when + DECLICK);
+    } catch {
+      // already ended
+    }
     this.stoppedAt = when;
   }
 
@@ -249,6 +263,7 @@ export class Deck {
   seek(pos: number, at = this.ctx.currentTime): void {
     const was = this.playing;
     this.stop(at);
+    this.src = null;
     this.base = { t: Math.max(at, this.ctx.currentTime), pos, rate: this.base.rate };
     this.stoppedAt = this.base.t;
     if (was) this.play(this.base.t, pos);
@@ -373,8 +388,6 @@ export class Deck {
     this.busyUntil = t1;
     const after = opts.after ?? "slip";
     if (after === "stop") {
-      this.src = null;
-      this.playing = false;
       this.stoppedAt = t1;
       return true;
     }

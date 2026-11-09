@@ -334,7 +334,11 @@ fn drain_stems(lib: &Arc<Library>, jobs: &Arc<Scheduler>, q: &Arc<StemQueue>, pa
                     }
                 }
                 let out = paths.vocals_file(&id);
-                match sep.as_mut().unwrap().vocals(&id, &path, &out) {
+                let res = sep.as_mut().unwrap().vocals(&id, &path, &out);
+                if let Some(s) = &sep {
+                    *q.device.lock().unwrap() = Some(s.device.clone());
+                }
+                match res {
                     Ok(env) => {
                         let _ = lib.save_stems(&id, &out, &env);
                     }

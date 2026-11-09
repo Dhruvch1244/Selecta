@@ -137,6 +137,8 @@ struct Reply {
     ok: Option<bool>,
     env: Option<Vec<f32>>,
     error: Option<String>,
+    /// Realtime factor of the device this track ran on.
+    speed: Option<f64>,
 }
 
 impl Separator {
@@ -174,6 +176,12 @@ impl Separator {
             return Err("stem worker exited".into());
         }
         let r: Reply = serde_json::from_str(&line).map_err(|e| format!("bad worker reply: {e}"))?;
+        if let Some(d) = &r.device {
+            self.device = match r.speed {
+                Some(x) => format!("{d} {x:.1}x"),
+                None => d.clone(),
+            };
+        }
         if r.ok == Some(true) {
             Ok(r.env.unwrap_or_default())
         } else {
