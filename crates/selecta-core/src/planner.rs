@@ -138,11 +138,8 @@ pub struct Candidate {
     pub genres: BTreeMap<String, f64>,
     /// AI genre/mood/language tags, when the library has been tagged.
     pub tags: Option<crate::llm::TrackTags>,
-<<<<<<< HEAD
     /// Vocal presence per bar (0..1) from the vocal stem, when separated.
     pub vocals: Option<Vec<f32>>,
-=======
->>>>>>> origin/main
 }
 
 // ---------- small, well-understood helpers (pillar 7) ----------
@@ -758,18 +755,12 @@ mod tests {
                         camelot: Some(a.camelot.clone()),
                         mood: None,
                         error: None,
-<<<<<<< HEAD
                         stems: false,
-=======
->>>>>>> origin/main
                     },
                     genres: genres::classify(tag, artist, "", Some(a.bpm)),
                     analysis: a,
                     tags: None,
-<<<<<<< HEAD
                     vocals: None,
-=======
->>>>>>> origin/main
                 }
             })
             .collect()

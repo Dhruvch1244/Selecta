@@ -1,9 +1,5 @@
 import * as React from "react";
-<<<<<<< HEAD
 import type { AiConfig, AiStatus, StemsStatus } from "@selecta/protocol";
-=======
-import type { AiConfig, AiStatus } from "@selecta/protocol";
->>>>>>> origin/main
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/dsgn/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/dsgn/dialog";
@@ -126,17 +122,13 @@ export function SettingsDialog({ open: isOpen, onOpenChange }: { open: boolean; 
             </>
           )}
         </Section>
-<<<<<<< HEAD
 
         <StemsSection />
-=======
->>>>>>> origin/main
       </DialogContent>
     </Dialog>
   );
 }
 
-<<<<<<< HEAD
 /**
  * The stem engine: a one-time install (PyTorch + Demucs in Selecta's own
  * env), then vocal stems for the whole library in the background, the set
@@ -214,8 +206,6 @@ function StemsSection() {
   );
 }
 
-=======
->>>>>>> origin/main
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-2 border-t border-border pt-3">

@@ -41,11 +41,8 @@ pub struct TrackSummary {
     pub mood: Option<String>,
     /// Why analysis failed, if it did (shown in the browser; retried when the file changes).
     pub error: Option<String>,
-<<<<<<< HEAD
     /// A current vocal stem exists (mashups, acapellas, vocal kills work).
     pub stems: bool,
-=======
->>>>>>> origin/main
 }
 
 #[derive(Serialize, TS, Clone, Debug)]
@@ -109,7 +106,6 @@ impl Library {
         if !cols.iter().any(|c| c == "llm_tags") {
             conn.execute("ALTER TABLE tracks ADD COLUMN llm_tags TEXT", [])?;
         }
-<<<<<<< HEAD
         for (col, ty) in [
             ("analysis_error", "TEXT"),
             ("vocals", "TEXT"),
@@ -120,10 +116,6 @@ impl Library {
             if !cols.iter().any(|c| c == col) {
                 conn.execute(&format!("ALTER TABLE tracks ADD COLUMN {col} {ty}"), [])?;
             }
-=======
-        if !cols.iter().any(|c| c == "analysis_error") {
-            conn.execute("ALTER TABLE tracks ADD COLUMN analysis_error TEXT", [])?;
->>>>>>> origin/main
         }
         Ok(Library { conn: Mutex::new(conn) })
     }
@@ -187,12 +179,8 @@ impl Library {
         let mut st = conn.prepare(
             "SELECT id, path, artist, title, album, genre_tag, duration, analysis, analysis_mtime >= mtime AND analysis_version = ?1,
                     json_extract(llm_tags, '$.mood'),
-<<<<<<< HEAD
                     CASE WHEN analysis_mtime >= mtime THEN analysis_error END,
                     vocals IS NOT NULL AND stems_mtime >= mtime
-=======
-                    CASE WHEN analysis_mtime >= mtime THEN analysis_error END
->>>>>>> origin/main
              FROM tracks ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE",
         )?;
         let rows = st.query_map([ANALYSIS_VERSION], |r| {
@@ -212,10 +200,7 @@ impl Library {
                 camelot: parsed.as_ref().and_then(|v| v["camelot"].as_str().map(String::from)),
                 mood: r.get::<_, Option<String>>(9)?.filter(|m| !m.is_empty()),
                 error: r.get(10)?,
-<<<<<<< HEAD
                 stems: r.get(11)?,
-=======
->>>>>>> origin/main
             })
         })?;
         rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
@@ -247,12 +232,8 @@ impl Library {
             if let Some(a) = self.analysis(&t.id)? {
                 let tags = self.tags(&t.id)?;
                 let genres = genres::classify_with(&t.genre_tag, &t.artist, &t.path, Some(a.bpm), tags.as_ref());
-<<<<<<< HEAD
                 let vocals = if t.stems { self.vocal_env(&t.id)?.map(|env| crate::stems::vocal_bars(&env, &a)) } else { None };
                 out.push(Candidate { track: t, analysis: a, genres, tags, vocals });
-=======
-                out.push(Candidate { track: t, analysis: a, genres, tags });
->>>>>>> origin/main
             }
         }
         Ok(out)

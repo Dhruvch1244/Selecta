@@ -35,10 +35,7 @@ interface State {
   scanning: boolean;
   analysing: { done: number; total: number } | null;
   tagging: { done: number; total: number } | null;
-<<<<<<< HEAD
   stemming: { done: number; total: number } | null;
-=======
->>>>>>> origin/main
   status: string;
   decks: Record<DeckId, DeckView>;
   refreshLibrary: () => Promise<void>;
@@ -62,10 +59,7 @@ export const useApp = create<State>((set, get) => {
     scanning: false,
     analysing: null,
     tagging: null,
-<<<<<<< HEAD
     stemming: null,
-=======
->>>>>>> origin/main
     status: "",
     decks: { A: emptyDeck(), B: emptyDeck() },
 
@@ -112,7 +106,6 @@ export const useApp = create<State>((set, get) => {
         };
         const analysing = pick("analysis");
         const tagging = pick("tagging");
-<<<<<<< HEAD
         const stemming = pick("stems");
         const before = get();
         set({ analysing, tagging, stemming });
@@ -124,13 +117,6 @@ export const useApp = create<State>((set, get) => {
           )
             void get().refreshLibrary();
           setTimeout(poll, analysing || tagging ? 800 : 2500);
-=======
-        const before = get();
-        set({ analysing, tagging });
-        if (analysing || tagging) {
-          if ((analysing && analysing.done % 10 === 0) || (tagging && tagging.done !== before.tagging?.done)) void get().refreshLibrary();
-          setTimeout(poll, 800);
->>>>>>> origin/main
         } else void get().refreshLibrary();
       };
       void poll();

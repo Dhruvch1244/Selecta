@@ -28,7 +28,6 @@ struct Settings {
     music_dirs: Vec<String>,
     #[serde(default)]
     ai: AiConfig,
-<<<<<<< HEAD
     /// Separate vocal stems in the background once the stem engine is installed.
     #[serde(default = "yes")]
     stems: bool,
@@ -36,8 +35,6 @@ struct Settings {
 
 fn yes() -> bool {
     true
-=======
->>>>>>> origin/main
 }
 
 /// (done, total) for library tagging, shown alongside scheduler groups.
@@ -98,25 +95,19 @@ async fn library_scan(app: State<'_, App>) -> Res<ScanReport> {
     let (lib, jobs) = (app.lib.clone(), app.jobs.clone());
     let ai = app.settings.lock().unwrap().ai.clone();
     let tagging = app.tagging.clone();
-<<<<<<< HEAD
     let want_stems = app.settings.lock().unwrap().stems && app.stem_paths.installed();
     let (stem_queue, stem_paths) = (app.stems.clone(), app.stem_paths.clone());
-=======
->>>>>>> origin/main
     blocking(move || {
         let rep = lib.scan(&dirs).map_err(err)?;
         if ai.tag_library && llm::status(&ai).available {
             queue_tagging(&lib, &jobs, &ai, &tagging);
         }
-<<<<<<< HEAD
         if want_stems {
             if let Ok(todo) = lib.needs_stems() {
                 stem_queue.push(todo, false);
                 drain_stems(&lib, &jobs, &stem_queue, &stem_paths);
             }
         }
-=======
->>>>>>> origin/main
         for (id, path, hint) in lib.needs_analysis().map_err(err)? {
             let lib = lib.clone();
             jobs.submit(&format!("analyse:{id}"), "analysis", Priority::Idle, move |cancel| {
@@ -291,7 +282,6 @@ async fn ai_test(app: State<'_, App>) -> Res<String> {
     .await
 }
 
-<<<<<<< HEAD
 /// Run the stem worker until the queue is empty. One worker for the whole
 /// app (it owns the GPU); a second call while it runs is a no-op, and the
 /// running loop picks up whatever was queued meanwhile.
@@ -400,8 +390,6 @@ async fn track_vocals(app: State<'_, App>, id: String) -> Res<Option<String>> {
     blocking(move || Ok(lib.vocals_path(&id).map_err(err)?.filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()))).await
 }
 
-=======
->>>>>>> origin/main
 #[tauri::command(async)]
 async fn sets_list(app: State<'_, App>) -> Res<Vec<SetSummary>> {
     let lib = app.lib.clone();
@@ -427,14 +415,11 @@ async fn jobs_progress(app: State<'_, App>) -> Res<Vec<GroupProgress>> {
     if total > 0 {
         groups.push(GroupProgress { group: "tagging".into(), done: app.tagging.done.load(Ordering::Relaxed), total });
     }
-<<<<<<< HEAD
     groups.retain(|g| g.group != "stems");
     let st = app.stems.total.load(Ordering::Relaxed);
     if st > 0 {
         groups.push(GroupProgress { group: "stems".into(), done: app.stems.done.load(Ordering::Relaxed), total: st });
     }
-=======
->>>>>>> origin/main
     Ok(groups)
 }
 
@@ -459,10 +444,7 @@ pub fn run() {
                 std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| Settings {
                     music_dirs: app.path().audio_dir().ok().map(|d| vec![d.to_string_lossy().to_string()]).unwrap_or_default(),
                     ai: AiConfig::default(),
-<<<<<<< HEAD
                     stems: true,
-=======
->>>>>>> origin/main
                 });
             allow_dirs(app.handle(), &settings.music_dirs);
             let lib = Arc::new(Library::open(&data.join("library.db")).map_err(|e| e.to_string())?);
@@ -476,11 +458,8 @@ pub fn run() {
                 jobs: Scheduler::new(workers),
                 settings: Mutex::new(settings),
                 settings_path,
-<<<<<<< HEAD
                 stems: StemQueue::new(),
                 stem_paths,
-=======
->>>>>>> origin/main
             });
             Ok(())
         })
@@ -497,15 +476,11 @@ pub fn run() {
             set_delete,
             library_tag,
             ai_status,
-<<<<<<< HEAD
             ai_test,
             stems_status,
             stems_install,
             stems_prioritise,
             track_vocals
-=======
-            ai_test
->>>>>>> origin/main
         ])
         .run(tauri::generate_context!())
         .expect("error while running Selecta");

@@ -20,11 +20,7 @@ export async function installMockBackend(): Promise<void> {
     const [artist, title] = file.replace(/\.[^.]+$/, "").split(" - ");
     const id = `mock${i}`;
     byId.set(id, f);
-<<<<<<< HEAD
     return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot, mood: null, error: null, stems: false };
-=======
-    return { id, path: `/__fixtures__/${file}`, artist: artist ?? "", title: title ?? file, album: "", genreTag: "", duration: f.analysis.duration, analyzed: true, bpm: f.analysis.bpm, key: f.analysis.key, camelot: f.analysis.camelot, mood: null, error: null };
->>>>>>> origin/main
   });
   // Vocal stems, if made for the fixtures: dev-fixtures/stems/<file name without extension>.ogg
   const stemOf = (t: TrackSummary) => `/__fixtures__/stems/${(t.path.split("/").pop() ?? "").replace(/\.[^.]+$/, "")}.ogg`;
@@ -40,7 +36,6 @@ export async function installMockBackend(): Promise<void> {
     }
   }
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
-<<<<<<< HEAD
     settings_get: () => ({ musicDirs: ["/__fixtures__"], ai: { provider: "claude", model: "sonnet", binary: "claude", curate: true, tagLibrary: true }, stems: true }),
     stems_status: () => ({ installed: true, installing: false, device: "cuda", detail: "", done: 0, total: 0 }),
     stems_install: () => null,
@@ -49,9 +44,6 @@ export async function installMockBackend(): Promise<void> {
       const t = tracks.find((x) => x.id === a.id);
       return t?.stems ? stemOf(t) : null;
     },
-=======
-    settings_get: () => ({ musicDirs: ["/__fixtures__"], ai: { provider: "claude", model: "sonnet", binary: "claude", curate: true, tagLibrary: true } }),
->>>>>>> origin/main
     ai_status: () => ({ available: true, provider: "claude", model: "sonnet", detail: "Using your Claude CLI (sonnet). (mock)" }),
     ai_test: () => "sonnet answered in 3.2s: \"drop the bass\" (mock)",
     library_tag: () => 0,
