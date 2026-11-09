@@ -6,6 +6,9 @@
 //! and freezes the whole window for its duration. This bit the Lyric Overlay
 //! for 40-85 s per local file before being fixed there.
 
+#[cfg(target_os = "linux")]
+mod mpris;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -417,6 +420,44 @@ async fn track_vocals(app: State<'_, App>, id: String) -> Res<Option<String>> {
     blocking(move || Ok(lib.vocals_path(&id).map_err(err)?.filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()))).await
 }
 
+/// What the listener hears now, for the Lyric Overlay and desktop media
+/// controls (MPRIS on Linux; a no-op elsewhere for now).
+#[derive(Default)]
+struct NowPlayingBus {
+    #[cfg(target_os = "linux")]
+    mpris: tokio::sync::OnceCell<Option<mpris::Mpris>>,
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command(async)]
+async fn now_playing(handle: tauri::AppHandle, bus: State<'_, NowPlayingBus>, np: Option<mpris::NowPlaying>) -> Res<()> {
+    let m = bus
+        .mpris
+        .get_or_init(|| async {
+            let on_key: mpris::OnKey = std::sync::Arc::new(move |k: &str| {
+                let _ = handle.emit("media-key", k);
+            });
+            match mpris::Mpris::start(on_key).await {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!("MPRIS unavailable ({e}); the Lyric Overlay won't see Selecta");
+                    None
+                }
+            }
+        })
+        .await;
+    if let Some(m) = m {
+        m.update(np).await.map_err(err)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command(async)]
+async fn now_playing(_np: Option<serde_json::Value>) -> Res<()> {
+    Ok(())
+}
+
 #[tauri::command(async)]
 async fn sets_list(app: State<'_, App>) -> Res<Vec<SetSummary>> {
     let lib = app.lib.clone();
@@ -479,6 +520,7 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&stem_paths.out);
             let _ = app.asset_protocol_scope().allow_directory(&stem_paths.out, false);
             let workers = std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(2);
+            app.manage(NowPlayingBus::default());
             app.manage(App {
                 tagging: Arc::new(TagProgress::default()),
                 lib,
@@ -505,6 +547,7 @@ pub fn run() {
             ai_status,
             ai_test,
             plan_splice,
+            now_playing,
             stems_status,
             stems_install,
             stems_prioritise,

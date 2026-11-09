@@ -18,3 +18,12 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
+
+# MPRIS "now playing" (mpris.rs): lets the Lyric Overlay and desktop media
+# controls see what Selecta is playing. Tokio, because Tauri already runs it.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["sync"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
