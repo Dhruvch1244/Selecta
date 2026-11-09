@@ -53,6 +53,7 @@ export async function installMockBackend(): Promise<void> {
     set_delete: () => null,
   };
   Object.assign(window, {
+    __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
     __TAURI_INTERNALS__: {
       invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
         const h = handlers[cmd];

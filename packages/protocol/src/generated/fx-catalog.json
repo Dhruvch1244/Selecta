@@ -1,0 +1,386 @@
+[
+  {
+    "id": "echo:1/8",
+    "family": "echo",
+    "label": "Echo 1/8",
+    "category": "echo",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "echo:3/16",
+    "family": "echo",
+    "label": "Echo 3/16",
+    "category": "echo",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "echo:1/4",
+    "family": "echo",
+    "label": "Echo 1/4",
+    "category": "echo",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "echo:1/2",
+    "family": "echo",
+    "label": "Echo 1/2",
+    "category": "echo",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "throw:1/8",
+    "family": "throw",
+    "label": "Echo Throw 1/8",
+    "category": "echo",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "throw:3/16",
+    "family": "throw",
+    "label": "Echo Throw 3/16",
+    "category": "echo",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "throw:1/4",
+    "family": "throw",
+    "label": "Echo Throw 1/4",
+    "category": "echo",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "reverb:hall",
+    "family": "reverb",
+    "label": "Reverb hall",
+    "category": "space",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "reverb:plate",
+    "family": "reverb",
+    "label": "Reverb plate",
+    "category": "space",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "reverb:wash",
+    "family": "reverb",
+    "label": "Reverb wash",
+    "category": "space",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "rev_throw:hall",
+    "family": "rev_throw",
+    "label": "Reverb Throw hall",
+    "category": "space",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "rev_throw:plate",
+    "family": "rev_throw",
+    "label": "Reverb Throw plate",
+    "category": "space",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "roll:1",
+    "family": "roll",
+    "label": "Loop Roll 1",
+    "category": "roll",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "roll:1/2",
+    "family": "roll",
+    "label": "Loop Roll 1/2",
+    "category": "roll",
+    "beats": 2.0,
+    "target": "deck"
+  },
+  {
+    "id": "roll:1/4",
+    "family": "roll",
+    "label": "Loop Roll 1/4",
+    "category": "roll",
+    "beats": 2.0,
+    "target": "deck"
+  },
+  {
+    "id": "roll:1/8",
+    "family": "roll",
+    "label": "Loop Roll 1/8",
+    "category": "roll",
+    "beats": 2.0,
+    "target": "deck"
+  },
+  {
+    "id": "roll_build:1",
+    "family": "roll_build",
+    "label": "Roll Build 1",
+    "category": "build",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "roll_build:2",
+    "family": "roll_build",
+    "label": "Roll Build 2",
+    "category": "build",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "stutter:1/8",
+    "family": "stutter",
+    "label": "Stutter 1/8",
+    "category": "roll",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "stutter:1/16",
+    "family": "stutter",
+    "label": "Stutter 1/16",
+    "category": "roll",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "hp_sweep:2",
+    "family": "hp_sweep",
+    "label": "HP Sweep 2",
+    "category": "build",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "hp_sweep:4",
+    "family": "hp_sweep",
+    "label": "HP Sweep 4",
+    "category": "build",
+    "beats": 16.0,
+    "target": "deck"
+  },
+  {
+    "id": "hp_sweep:8",
+    "family": "hp_sweep",
+    "label": "HP Sweep 8",
+    "category": "build",
+    "beats": 32.0,
+    "target": "deck"
+  },
+  {
+    "id": "lp_sweep:2",
+    "family": "lp_sweep",
+    "label": "LP Sweep 2",
+    "category": "filter",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "lp_sweep:4",
+    "family": "lp_sweep",
+    "label": "LP Sweep 4",
+    "category": "filter",
+    "beats": 16.0,
+    "target": "deck"
+  },
+  {
+    "id": "gate:trance",
+    "family": "gate",
+    "label": "Gate trance",
+    "category": "gate",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "gate:half",
+    "family": "gate",
+    "label": "Gate half",
+    "category": "gate",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "gate:offbeat",
+    "family": "gate",
+    "label": "Gate offbeat",
+    "category": "gate",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "gate:chop",
+    "family": "gate",
+    "label": "Gate chop",
+    "category": "gate",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "flanger:slow",
+    "family": "flanger",
+    "label": "Flanger slow",
+    "category": "mod",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "flanger:jet",
+    "family": "flanger",
+    "label": "Flanger jet",
+    "category": "mod",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "phaser:slow",
+    "family": "phaser",
+    "label": "Phaser slow",
+    "category": "mod",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "phaser:fast",
+    "family": "phaser",
+    "label": "Phaser fast",
+    "category": "mod",
+    "beats": 8.0,
+    "target": "deck"
+  },
+  {
+    "id": "crush:8",
+    "family": "crush",
+    "label": "Bitcrush 8",
+    "category": "dist",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "crush:4",
+    "family": "crush",
+    "label": "Bitcrush 4",
+    "category": "dist",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "tape_stop:1",
+    "family": "tape_stop",
+    "label": "Tape Stop 1",
+    "category": "tape",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "tape_stop:2",
+    "family": "tape_stop",
+    "label": "Tape Stop 2",
+    "category": "tape",
+    "beats": 2.0,
+    "target": "deck"
+  },
+  {
+    "id": "backspin:1",
+    "family": "backspin",
+    "label": "Backspin 1",
+    "category": "tape",
+    "beats": 1.0,
+    "target": "deck"
+  },
+  {
+    "id": "backspin:2",
+    "family": "backspin",
+    "label": "Backspin 2",
+    "category": "tape",
+    "beats": 2.0,
+    "target": "deck"
+  },
+  {
+    "id": "rewind:8",
+    "family": "rewind",
+    "label": "Rewind 8",
+    "category": "tape",
+    "beats": 4.0,
+    "target": "deck"
+  },
+  {
+    "id": "riser:4",
+    "family": "riser",
+    "label": "Riser 4",
+    "category": "build",
+    "beats": 16.0,
+    "target": "master"
+  },
+  {
+    "id": "riser:8",
+    "family": "riser",
+    "label": "Riser 8",
+    "category": "build",
+    "beats": 32.0,
+    "target": "master"
+  },
+  {
+    "id": "impact:boom",
+    "family": "impact",
+    "label": "Impact boom",
+    "category": "hit",
+    "beats": 2.0,
+    "target": "master"
+  },
+  {
+    "id": "impact:crash",
+    "family": "impact",
+    "label": "Impact crash",
+    "category": "hit",
+    "beats": 2.0,
+    "target": "master"
+  },
+  {
+    "id": "sub_drop:2",
+    "family": "sub_drop",
+    "label": "Sub Drop 2",
+    "category": "hit",
+    "beats": 2.0,
+    "target": "master"
+  },
+  {
+    "id": "horn:triple",
+    "family": "horn",
+    "label": "Air Horn triple",
+    "category": "horn",
+    "beats": 4.0,
+    "target": "master"
+  },
+  {
+    "id": "horn:single",
+    "family": "horn",
+    "label": "Air Horn single",
+    "category": "horn",
+    "beats": 4.0,
+    "target": "master"
+  },
+  {
+    "id": "siren:dub",
+    "family": "siren",
+    "label": "Dub Siren dub",
+    "category": "horn",
+    "beats": 8.0,
+    "target": "master"
+  }
+]

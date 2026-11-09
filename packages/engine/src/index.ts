@@ -8,3 +8,4 @@ export { scheduleTransition, KILL_DB, type Move, type TransitionSchedule } from 
 export { selfTest, type SelfTestResult } from "./selftest";
 export { loadLimiter } from "./engine";
 export { dbToGain } from "./deck";
+export { fire, FAMILIES, type FxContext, type FireOptions } from "./fx";

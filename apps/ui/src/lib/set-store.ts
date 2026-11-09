@@ -44,6 +44,9 @@ export const useSet = create<SetState>((set, get) => {
       if (t) syncDeckView(e.deck, t.id, t.artist, t.title);
       const pct = (e.rate - 1) * 100;
       status(`${e.kind.replace("_", " ")} → ${t?.title ?? ""}${Math.abs(pct) > 0.01 ? ` (${pct > 0 ? "+" : ""}${pct.toFixed(2)}%)` : ""}`);
+    } else if (e.type === "fx") {
+      const label = e.fx.replace(":", " ").replace(/_/g, " ");
+      status(`✦ ${label}: ${e.reason}`);
     } else if (e.type === "postponed") status("Next track still decoding; holding this one for another phrase.");
     else if (e.type === "end") {
       set({ playing: false, leadDeck: null });
