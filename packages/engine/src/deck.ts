@@ -41,8 +41,11 @@ export class Deck {
   private stoppedAt = Infinity;
   private readonly vca: GainNode;
   private readonly trimNode: GainNode;
+<<<<<<< HEAD
   /** Stem gains (linear). On a 2-channel track `inst` is the whole track and `vox` has nothing to do. */
   private readonly stem: Record<Stem, GainNode>;
+=======
+>>>>>>> origin/main
   /** Isolator band gains (linear; 0 = full kill). */
   private readonly eq: Record<Band, GainNode>;
   private readonly eqIn: GainNode;
@@ -112,6 +115,7 @@ export class Deck {
     this.analyser = ctx.createAnalyser();
     this.analyser.fftSize = 1024;
     this.meterBuf = new Float32Array(this.analyser.fftSize);
+<<<<<<< HEAD
     // Stems: split the (up to) 4-channel source into instrumental and vocal
     // pairs, each with its own gain, then sum. A 2-channel track lands
     // entirely on the instrumental pair (discrete up-mix zero-fills 2-3).
@@ -131,6 +135,11 @@ export class Deck {
     this.vca.channelInterpretation = "discrete";
     this.vca.connect(split4);
     this.trimNode.connect(this.eqIn);
+=======
+    this.vca
+      .connect(this.trimNode)
+      .connect(this.eqIn);
+>>>>>>> origin/main
     // FX slot after the filters: inserts mute `slotDry` for their window and
     // feed `slotOut` themselves; sends tap `slotIn` and return on `tail`,
     // which is post-fader so echo/reverb tails ring on after a fader cut.
@@ -187,7 +196,11 @@ export class Deck {
     this.rev = null;
     this.busyUntil = 0;
     this.ov = null;
+<<<<<<< HEAD
     const chans = Array.from({ length: Math.min(4, track.buffer.numberOfChannels) }, (_, i) => track.buffer.getChannelData(i));
+=======
+    const chans = Array.from({ length: Math.min(2, track.buffer.numberOfChannels) }, (_, i) => track.buffer.getChannelData(i));
+>>>>>>> origin/main
     this.wave = computeWaveform(chans, track.buffer.sampleRate);
     this.base = { t: this.ctx.currentTime, pos: posOfBar(this.gridOrThrow(), track.analysis.startBar), rate: 1 };
     this.stoppedAt = this.ctx.currentTime;

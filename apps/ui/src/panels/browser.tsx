@@ -23,7 +23,10 @@ export function Browser() {
   const scanning = useApp((s) => s.scanning);
   const analysing = useApp((s) => s.analysing);
   const tagging = useApp((s) => s.tagging);
+<<<<<<< HEAD
   const stemming = useApp((s) => s.stemming);
+=======
+>>>>>>> origin/main
   const { scan, load, setMusicDirs } = useApp.getState();
   const [q, setQ] = React.useState("");
   const [scrollTop, setScrollTop] = React.useState(0);
@@ -91,12 +94,15 @@ export function Browser() {
             <span className="font-mono text-[10px] tabular-nums text-muted-foreground">AI {tagging.done}/{tagging.total}</span>
           </div>
         )}
+<<<<<<< HEAD
         {stemming && (
           <div className="flex items-center gap-2" {...hintProps({ label: "Stem separation", value: `${stemming.done} of ${stemming.total} tracks: splitting vocals from the beat` })}>
             <Progress value={(stemming.done / Math.max(1, stemming.total)) * 100} className="h-1" />
             <span className="font-mono text-[10px] tabular-nums text-muted-foreground">STEM {stemming.done}/{stemming.total}</span>
           </div>
         )}
+=======
+>>>>>>> origin/main
         <div className="flex gap-1">
           <Button size="xs" variant="secondary" onClick={pickFolder} {...hintProps({ label: "Add a music folder" })}>
             Add folder
@@ -125,7 +131,11 @@ function TrackRow({ t, top, selected, onSelect, onLoad }: { t: TrackSummary; top
           onKeyDown={(e) => {
             if (e.key === "Enter") onLoad(e.shiftKey ? "B" : "A");
           }}
+<<<<<<< HEAD
           {...hintProps({ label: `${t.artist} – ${t.title}`, value: t.error ? `Can't analyse: ${t.error}` : t.analyzed ? `${t.bpm?.toFixed(1)} BPM · ${t.key} (${t.camelot})${t.mood ? ` · ${t.mood}` : ""}${t.stems ? " · stems ready" : ""}` : "not analysed yet", keys: "Enter → A · Shift+Enter → B" })}
+=======
+          {...hintProps({ label: `${t.artist} – ${t.title}`, value: t.error ? `Can't analyse: ${t.error}` : t.analyzed ? `${t.bpm?.toFixed(1)} BPM · ${t.key} (${t.camelot})${t.mood ? ` · ${t.mood}` : ""}` : "not analysed yet", keys: "Enter → A · Shift+Enter → B" })}
+>>>>>>> origin/main
           style={{ top, height: 30 }}
           className={cn(
             "absolute inset-x-0 flex cursor-default items-center gap-2 border-b border-border/40 px-2 outline-none",
@@ -137,11 +147,14 @@ function TrackRow({ t, top, selected, onSelect, onLoad }: { t: TrackSummary; top
             <div className="flex items-center gap-1 truncate text-[10px] text-muted-foreground">
               <span className="truncate">{t.artist || "Unknown artist"}</span>
               {t.mood && <span className="shrink-0 rounded-[2px] bg-muted px-1 text-[9px] uppercase tracking-wide">{t.mood}</span>}
+<<<<<<< HEAD
               {t.stems && (
                 <span className="shrink-0 rounded-[2px] border border-[var(--magenta)]/50 px-0.5 font-mono text-[8.5px] text-[var(--magenta)]" aria-label="Has stems" title="Vocal stem ready">
                   STEM
                 </span>
               )}
+=======
+>>>>>>> origin/main
             </div>
           </div>
           {t.error ? (

@@ -2,14 +2,21 @@
 // apps/desktop/src-tauri/src/lib.rs; result types come from @selecta/protocol,
 // generated from the Rust structs, so a renamed field is a type error here.
 
+<<<<<<< HEAD
 import type { AiConfig, AiStatus, Analysis, GroupProgress, ScanReport, SetPlan, SetSummary, StemsStatus, TrackSummary } from "@selecta/protocol";
+=======
+import type { AiConfig, AiStatus, Analysis, GroupProgress, ScanReport, SetPlan, SetSummary, TrackSummary } from "@selecta/protocol";
+>>>>>>> origin/main
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export interface Settings {
   musicDirs: string[];
   ai: AiConfig;
+<<<<<<< HEAD
   /** Separate vocal stems in the background (once the stem engine is installed). */
   stems: boolean;
+=======
+>>>>>>> origin/main
 }
 
 export const inTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -33,10 +40,13 @@ export const api = {
   aiStatus: () => call<AiStatus>("ai_status"),
   aiTest: () => call<string>("ai_test"),
   tagLibrary: () => call<number>("library_tag"),
+<<<<<<< HEAD
   stemsStatus: () => call<StemsStatus>("stems_status"),
   stemsInstall: () => call<void>("stems_install"),
   stemsPrioritise: (ids: string[]) => call<void>("stems_prioritise", { ids }),
   trackVocals: (id: string) => call<string | null>("track_vocals", { id }),
+=======
+>>>>>>> origin/main
 };
 
 /** Raw bytes of a library file, read through Tauri's scoped asset protocol. */
