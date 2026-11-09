@@ -123,6 +123,15 @@ export function SettingsDialog({ open: isOpen, onOpenChange }: { open: boolean; 
           )}
         </Section>
 
+        <Section title="Playback">
+          <Row
+            label="Keylock"
+            hint="Beatmatching keeps every track in its own key (no chipmunk vocals), and sets may shift a track ±1–2 semitones so mashups and blends land in key."
+          >
+            <Switch checked={settings.keylock} onCheckedChange={(v) => void saveSettings({ ...settings, keylock: v })} aria-label="Keylock" />
+          </Row>
+        </Section>
+
         <StemsSection />
       </DialogContent>
     </Dialog>

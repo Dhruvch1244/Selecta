@@ -36,7 +36,7 @@ export async function installMockBackend(): Promise<void> {
     }
   }
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
-    settings_get: () => ({ musicDirs: ["/__fixtures__"], ai: { provider: "claude", model: "sonnet", binary: "claude", curate: true, tagLibrary: true }, stems: true }),
+    settings_get: () => ({ musicDirs: ["/__fixtures__"], ai: { provider: "claude", model: "sonnet", binary: "claude", curate: true, tagLibrary: true }, stems: true, keylock: true }),
     stems_status: () => ({ installed: true, installing: false, device: "cuda", detail: "", done: 0, total: 0 }),
     stems_install: () => null,
     now_playing: (a) => ((window as unknown as { __nowPlaying: unknown }).__nowPlaying = a.np),

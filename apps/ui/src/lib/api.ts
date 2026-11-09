@@ -10,6 +10,8 @@ export interface Settings {
   ai: AiConfig;
   /** Separate vocal stems in the background (once the stem engine is installed). */
   stems: boolean;
+  /** Tempo changes keep the key; sets may key-shift tracks to mix harmonically. */
+  keylock: boolean;
 }
 
 export const inTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

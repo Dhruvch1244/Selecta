@@ -11,6 +11,7 @@ import type { Deck, DeckId, LoadedTrack } from "./deck";
 import type { Engine } from "./engine";
 import { matchRate, posOfBar } from "./grid";
 import { fire, type FxContext } from "./fx";
+import { keylockSemitones, shiftPitch } from "./keylock";
 import { scheduleTransition, type TransitionSchedule } from "./schedule";
 
 const LOOKAHEAD = 1.2; // seconds: enough to schedule a transition sample-accurately
@@ -48,6 +49,8 @@ export class Conductor {
   /** Cue keys already fired for the current track ("index:position"). */
   private fired = new Set<string>();
   private readonly fx: FxContext;
+  /** Pitch-correct tempo changes (and apply planned key shifts) while preparing tracks. */
+  keylock = false;
 
   constructor(
     private readonly engine: Engine,
@@ -134,11 +137,31 @@ export class Conductor {
     if (!t) return Promise.reject(new Error("no such track"));
     let p = this.loaded.get(i);
     if (!p) {
-      p = this.host.loadTrack(t);
+      p = this.host.loadTrack(t).then((track) => this.keylocked(t, track));
       p.catch((e) => this.host.onEvent?.({ type: "error", message: `Couldn't load ${t.title}: ${e instanceof Error ? e.message : e}` }));
       this.loaded.set(i, p);
     }
     return p;
+  }
+
+  /**
+   * The track as it should sound in this set: pitch-shifted by the planned
+   * rate (so the tempo change keeps its key) plus its harmonic key shift.
+   * Only the part the set plays is rendered, during preparation, which
+   * happens a whole track ahead. Any failure plays the original instead.
+   */
+  private async keylocked(t: SetTrack, track: LoadedTrack): Promise<LoadedTrack> {
+    const semis = keylockSemitones(t.rate, t.keyShift ?? 0);
+    if (!this.keylock || Math.abs(semis) < 0.01) return track;
+    const g = { beat: track.analysis.beat, downbeat0: track.analysis.downbeat0 };
+    const from = posOfBar(g, Math.max(0, t.inBar - 2)) - 1;
+    const to = posOfBar(g, t.outBar + 24);
+    try {
+      return { ...track, buffer: await shiftPitch(track.buffer, semis, { from, to }) };
+    } catch (e) {
+      console.warn("keylock render failed, playing the original:", e);
+      return track;
+    }
   }
 
   private tick(): void {

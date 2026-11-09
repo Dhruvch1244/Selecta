@@ -2,13 +2,15 @@
 // that changes every frame (positions, meters) is read straight from the
 // engine in the frame loop instead, so React never re-renders at 60 Hz.
 
-import { Engine, type DeckId, matchRate, posOfBar } from "@selecta/engine";
+import { Engine, type DeckId, keylockSemitones, matchRate, posOfBar, shiftPitch } from "@selecta/engine";
 import type { Analysis, TrackSummary } from "@selecta/protocol";
 import { create } from "zustand";
 import { api, type Settings } from "./api";
 import { loadTrackAudio } from "./track-audio";
 
 let engine: Engine | null = null;
+/** Each deck's track as decoded, before any keylock render (what keylock re-shifts from). */
+const originals: Record<DeckId, AudioBuffer | null> = { A: null, B: null };
 /** The engine is created on first use, which is always a user gesture (autoplay policy). */
 export function getEngine(): Engine {
   engine ??= new Engine();
@@ -132,6 +134,7 @@ export const useApp = create<State>((set, get) => {
         const analysis = loaded.analysis;
         if (get().decks[id].trackId !== track.id) return; // a newer load won
         eng.decks[id].load(loaded);
+        originals[id] = loaded.buffer;
         patchDeck(id, { analysis, loading: false, playing: false, rate: 1 });
         void get().refreshLibrary();
       } catch (e) {
@@ -176,7 +179,25 @@ export const useApp = create<State>((set, get) => {
         me.setRate(rate);
       }
       patchDeck(id, { rate, playing: me.playing });
-      get().setStatus(`Deck ${id} synced to ${other.bpm.toFixed(2)} BPM (${rate >= 1 ? "+" : ""}${((rate - 1) * 100).toFixed(2)}%).`);
+      const pct = `${rate >= 1 ? "+" : ""}${((rate - 1) * 100).toFixed(2)}%`;
+      get().setStatus(`Deck ${id} synced to ${other.bpm.toFixed(2)} BPM (${pct}).`);
+      // Keylock: re-render the next few minutes at the corrected pitch, then swap it in seamlessly.
+      const orig = originals[id];
+      if (get().settings?.keylock !== false && orig && me.track && Math.abs(keylockSemitones(rate)) >= 0.01) {
+        const trackId = me.track.id;
+        const pos = me.position();
+        const semis = keylockSemitones(rate);
+        const current = () => me.track?.id === trackId && Math.abs(me.rate - rate) < 1e-6; // not moved on meanwhile
+        // Two stages so keylock engages in seconds: the next 45 s first, then the whole track.
+        void (async () => {
+          const soon = await shiftPitch(orig, semis, { from: pos - 2, to: pos + 45 });
+          if (!current()) return;
+          me.swapBuffer(soon);
+          get().setStatus(`Deck ${id} synced (${pct}), keylock on: original key.`);
+          const all = await shiftPitch(orig, semis, { from: pos - 2, to: orig.duration });
+          if (current()) me.swapBuffer(all);
+        })().catch((e) => console.warn("keylock render failed:", e));
+      }
     },
   };
 });

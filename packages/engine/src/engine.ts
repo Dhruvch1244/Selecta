@@ -9,6 +9,8 @@ export class Engine {
   readonly ctx: AudioContext;
   readonly decks: Record<DeckId, Deck>;
   readonly limiterReady: Promise<void>;
+  /** The limiter worklet is in the signal path (false: it failed to load and the mix runs unlimited). */
+  limiterActive = false;
   /** Master one-shots (horns, risers, impacts) join the mix before the limiter. */
   readonly fxBus: GainNode;
   master: MeterState = newMeter();
@@ -35,6 +37,7 @@ export class Engine {
     this.limiterReady = loadLimiter(ctx).then((lim) => {
       this.mix.disconnect(this.volume);
       this.mix.connect(lim).connect(this.volume);
+      this.limiterActive = true;
     }).catch((e) => console.warn("limiter unavailable, running unlimited:", e));
     this.volume.connect(this.analyser);
     this.decks = { A: new Deck(ctx, "A", this.mix), B: new Deck(ctx, "B", this.mix) };

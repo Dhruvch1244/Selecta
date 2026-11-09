@@ -18,6 +18,7 @@
   },
   "include": [
     "src",
-    "vite.config.ts"
+    "vite.config.ts",
+    "../../packages/engine/src/signalsmith-stretch.d.ts"
   ]
 }

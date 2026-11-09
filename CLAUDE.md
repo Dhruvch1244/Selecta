@@ -68,6 +68,25 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
   GSTREAMER_HELPERS_DIR=/usr/lib/gstreamer-1.0` (the plugin guesses Debian
   paths). On Arch, the native binary (`target/release/selecta-desktop`) uses
   the system GStreamer and needs none of this.
+- **CSP vs worklets/WASM:** the window CSP must allow `script-src 'self' blob:
+  'wasm-unsafe-eval'`: signalsmith-stretch (keylock) loads its AudioWorklet
+  from a blob URL and compiles WASM. Without it keylock silently falls back
+  to the original pitch in the app while working fine in the dev browser.
+- **Measure the real webview, not just Chrome:** `SELECTA_SELFTEST=1
+  ./target/release/selecta-desktop` runs the audio self-test inside the app's
+  own webview (WebKitGTK on Linux), prints PASS/FAIL lines and exits 0/1.
+- **Offline worklet race:** messages to an AudioWorklet (e.g. stretch
+  `schedule()`) can arrive after an OfflineAudioContext has already
+  finished rendering. Await a reply on the same port before `startRendering()`
+  (see `keylock.ts`).
+- **Dev fixtures are synthetic:** `apps/ui/dev-fixtures/*.mp3` are generated
+  beats with real song names, so their vocal stems are near-silent. Use real
+  files (copied into `dev-fixtures/real/`, gitignored) for stem/vocal tests.
+- **Vite HMR in CDP tests:** after editing UI files, restart `npm run dev:ui`
+  before evaluating `import("/src/lib/store.ts")` from a test: hot-reload
+  timestamps give the page a second store instance and the test sees an empty one.
+- **zsh doesn't word-split `$VAR`:** a file list in a variable is one argument.
+  Use `git diff --name-only --diff-filter=U | xargs -r git checkout --ours --`.
 
 ## Dependencies
 
