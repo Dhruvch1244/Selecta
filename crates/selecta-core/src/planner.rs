@@ -719,6 +719,7 @@ mod tests {
                         key: Some(a.key.clone()),
                         camelot: Some(a.camelot.clone()),
                         mood: None,
+                        error: None,
                     },
                     genres: genres::classify(tag, artist, "", Some(a.bpm)),
                     analysis: a,

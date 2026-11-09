@@ -4,4 +4,8 @@ export type TrackSummary = { id: string, path: string, artist: string, title: st
 /**
  * AI-tagged mood (party, sad, ...), when the library has been tagged.
  */
-mood: string | null, };
+mood: string | null, 
+/**
+ * Why analysis failed, if it did (shown in the browser; retried when the file changes).
+ */
+error: string | null, };

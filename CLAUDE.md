@@ -50,6 +50,11 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
   `get_codecs().make_audio_decoder(...)`, `next_packet()` returns
   `Result<Option<Packet>>`, and buffers expose `spec().rate()` and
   `copy_to_slice_interleaved`. See `crates/selecta-core/src/decode.rs`.
+- **Web Audio `lowpass`/`highpass` Q is in dB**, not linear: Butterworth is
+  `Q = -3.0103`, not `0.7071` (which measured as +2..4 dB crossover bumps).
+  Measure audio changes with `await selectaSelfTest()` in a dev build.
+- **symphonia can't decode Opus**: `decode_mono` falls back to ffmpeg; most
+  of a real library was `.opus`. Keep the fallback until symphonia has Opus.
 - **Tauri 3 is alpha** (as of Nov 2026); this repo is on Tauri 2 stable.
 - **`pkill -f <name>` / `pgrep -f <pattern>` match the shell running them**
   when its own command line contains the pattern, killing it. Find dev

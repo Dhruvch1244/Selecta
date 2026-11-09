@@ -20,6 +20,8 @@ export interface LoadedTrack {
 }
 
 const DECLICK = 0.004;
+/** dB to linear for isolator bands; at or below the kill level the band is fully off. */
+export const dbToGain = (db: number): number => (db <= EQ_KILL_DB ? 0 : Math.pow(10, db / 20));
 /** Full kill: -40 dB is inaudible under a playing deck and avoids denormal tails. */
 export const EQ_KILL_DB = -40;
 
@@ -30,13 +32,16 @@ export class Deck {
   playing = false;
   meter: MeterState = newMeter();
 
-  private readonly ctx: AudioContext;
+  private readonly ctx: BaseAudioContext;
   private src: AudioBufferSourceNode | null = null;
   private base: BaseLine = { t: 0, pos: 0, rate: 1 };
   private stoppedAt = Infinity;
   private readonly vca: GainNode;
   private readonly trimNode: GainNode;
-  private readonly eq: Record<Band, BiquadFilterNode>;
+  /** Isolator band gains (linear; 0 = full kill). */
+  private readonly eq: Record<Band, GainNode>;
+  private readonly eqIn: GainNode;
+  private readonly bandSum: GainNode;
   private readonly filterHp: BiquadFilterNode;
   private readonly filterLp: BiquadFilterNode;
   readonly fader: GainNode;
@@ -45,7 +50,7 @@ export class Deck {
   private readonly analyser: AnalyserNode;
   private readonly meterBuf: Float32Array<ArrayBuffer>;
 
-  constructor(ctx: AudioContext, id: DeckId, out: AudioNode) {
+  constructor(ctx: BaseAudioContext, id: DeckId, out: AudioNode) {
     this.ctx = ctx;
     this.id = id;
     this.vca = ctx.createGain();
@@ -56,9 +61,36 @@ export class Deck {
       f.frequency.value = freq;
       return f;
     };
-    // Isolator-style corner frequencies common on DJ mixers.
-    this.eq = { low: band("lowshelf", 220), mid: band("peaking", 1000), high: band("highshelf", 3200) };
-    this.eq.mid.Q.value = 0.7;
+    // 3-band isolator, as on club DJ mixers: the signal is split by 4th-order
+    // Linkwitz-Riley crossovers (two cascaded Butterworth biquads) at 250 Hz
+    // and 2.5 kHz, each band gets its own gain, and the bands are summed.
+    // Unlike shelving EQs, a kill really removes its band (the old
+    // -40 dB low shelf also dulled the low mids, so bass swaps sounded muddy).
+    const lr4 = (type: BiquadFilterType, freq: number): [BiquadFilterNode, BiquadFilterNode] => {
+      const a = band(type, freq);
+      const b = band(type, freq);
+      // Butterworth. Web Audio gives lowpass/highpass Q *in dB*: a linear 0.7071
+      // here is read as +0.7 dB resonance, and measured as +2..4 dB bumps
+      // around both crossovers. 20*log10(1/sqrt 2) = -3.0103 dB is the real thing.
+      a.Q.value = b.Q.value = 20 * Math.log10(Math.SQRT1_2);
+      a.connect(b);
+      return [a, b];
+    };
+    const split = ctx.createGain();
+    this.bandSum = ctx.createGain();
+    this.eq = { low: ctx.createGain(), mid: ctx.createGain(), high: ctx.createGain() };
+    const [l1, l2] = lr4("lowpass", 250);
+    split.connect(l1);
+    l2.connect(this.eq.low).connect(this.bandSum);
+    const [m1, m2] = lr4("highpass", 250);
+    const [m3, m4] = lr4("lowpass", 2500);
+    split.connect(m1);
+    m2.connect(m3);
+    m4.connect(this.eq.mid).connect(this.bandSum);
+    const [h1, h2] = lr4("highpass", 2500);
+    split.connect(h1);
+    h2.connect(this.eq.high).connect(this.bandSum);
+    this.eqIn = split;
     this.filterHp = band("highpass", 10);
     this.filterLp = band("lowpass", 22000);
     this.filterHp.Q.value = this.filterLp.Q.value = 0.9;
@@ -68,9 +100,8 @@ export class Deck {
     this.meterBuf = new Float32Array(this.analyser.fftSize);
     this.vca
       .connect(this.trimNode)
-      .connect(this.eq.low)
-      .connect(this.eq.mid)
-      .connect(this.eq.high)
+      .connect(this.eqIn);
+    this.bandSum
       .connect(this.filterHp)
       .connect(this.filterLp)
       .connect(this.fader)
@@ -183,7 +214,7 @@ export class Deck {
     this.trimNode.gain.setTargetAtTime(Math.pow(10, (norm + db) / 20), this.ctx.currentTime, 0.01);
   }
   setEq(band: Band, db: number): void {
-    this.eq[band].gain.setTargetAtTime(Math.max(EQ_KILL_DB, db), this.ctx.currentTime, 0.008);
+    this.eq[band].gain.setTargetAtTime(dbToGain(db), this.ctx.currentTime, 0.008);
   }
   /** -1..1: negative sweeps a low-pass down, positive a high-pass up, 0 is bypass. */
   setFilter(v: number): void {
@@ -202,7 +233,7 @@ export class Deck {
   resetMix(at = this.ctx.currentTime): void {
     for (const b of ["low", "mid", "high"] as const) {
       this.eq[b].gain.cancelScheduledValues(at);
-      this.eq[b].gain.setValueAtTime(0, at);
+      this.eq[b].gain.setValueAtTime(1, at);
     }
     this.filterHp.frequency.cancelScheduledValues(at);
     this.filterHp.frequency.setValueAtTime(10, at);
@@ -217,13 +248,15 @@ export class Deck {
     for (const m of [...moves].sort((a, b) => a.at - b.at)) {
       const p = this.param(m.target);
       const at = Math.max(m.at, this.ctx.currentTime);
-      if (m.until === undefined) p.setValueAtTime(m.value, at);
-      else {
-        // Anchor the ramp's start at the value in force at `at`, then ramp.
-        p.setValueAtTime(p.value, at);
-        if (m.target === "hp" || m.target === "lp") p.exponentialRampToValueAtTime(Math.max(10, m.value), Math.max(at + 0.001, m.until));
-        else p.linearRampToValueAtTime(m.value, Math.max(at + 0.001, m.until));
-      }
+      // EQ moves are written in dB (schedule.ts); the isolator bands take linear gain.
+      const v = m.target === "low" || m.target === "high" ? dbToGain(m.value) : m.value;
+      // A ramp starts from the previous event; schedules always place an
+      // explicit step at the ramp's start. (Re-anchoring at `p.value` here used
+      // to override that step with the value in force *now*, which silently
+      // turned every incoming fade-in into "start at full volume".)
+      if (m.until === undefined) p.setValueAtTime(v, at);
+      else if (m.target === "hp" || m.target === "lp") p.exponentialRampToValueAtTime(Math.max(10, v), Math.max(at + 0.001, m.until));
+      else p.linearRampToValueAtTime(v, Math.max(at + 0.001, m.until));
     }
   }
 

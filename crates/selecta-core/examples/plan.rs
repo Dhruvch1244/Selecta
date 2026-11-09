@@ -35,6 +35,7 @@ fn main() {
                 key: Some(a.key.clone()),
                 camelot: Some(a.camelot.clone()),
                 mood: None,
+                error: None,
             };
             Some(Candidate { genres: genres::classify("", &artist, p, Some(a.bpm)), track, analysis: a, tags: None })
         })

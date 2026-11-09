@@ -29,7 +29,9 @@ const BINS: usize = NFFT / 2 + 1;
 /// the frame centre. Measured on synthetic tracks with known offsets: a
 /// consistent -36..-42 ms, corrected so cue points land on the transient.
 const ONSET_LAG: f64 = 0.039;
-pub const ANALYSIS_VERSION: u32 = 1;
+/// Bump when analysis output changes; stored tracks with an older version are re-analysed.
+/// 2: peak-aware gain (`peak_db`), soft genre tempo prior.
+pub const ANALYSIS_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -74,7 +76,10 @@ pub struct Analysis {
     pub breaks: Vec<u32>,
     pub outro_bar: u32,
     pub bar_energy: Vec<f32>,
+    /// Playback gain to normalise loudness, capped so the track's peak stays under -1 dBFS.
     pub gain_db: f64,
+    /// Sample peak of the decoded audio, dBFS.
+    pub peak_db: f64,
     pub centroid: f64,
     pub onset_rate: f64,
     pub wave: WaveOverview,
@@ -182,16 +187,17 @@ fn autocorr(x: &[f64]) -> Vec<f64> {
     buf[..n].iter().map(|c| c.re / z).collect()
 }
 
-fn estimate_tempo(onset: &[f64], fps: f64) -> f64 {
+/// Tempo by comb-weighted autocorrelation over 70-190 BPM, weighted by a
+/// log-Gaussian prior (`center` BPM, `width` in octaves).
+fn estimate_tempo(onset: &[f64], fps: f64, center: f64, width: f64) -> f64 {
     let ac = autocorr(onset);
-    let mut best = (f64::MIN, 120.0);
+    let mut best = (f64::MIN, center);
     let mut bpm = 70.0;
     while bpm < 190.0 {
         let lag = 60.0 * fps / bpm;
         // Comb over multiples: a true period also scores at 2x, 3x, 4x its lag.
         let mut s: f64 = (1..=4).map(|m| interp(&ac, lag * m as f64) / m as f64).sum();
-        // Weak log-Gaussian prior around 125 BPM, one octave wide.
-        s *= (-0.5 * ((bpm / 125.0f64).log2()).powi(2)).exp();
+        s *= (-0.5 * ((bpm / center).log2() / width).powi(2)).exp();
         if s > best.0 {
             best = (s, bpm);
         }
@@ -405,15 +411,17 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
     let low_bins = sp.bin_of(150.0) + 1;
     let low_on = detrend(&flux(&sp, 0, low_bins), fps as usize);
 
-    let mut bpm0 = estimate_tempo(&onset, fps);
-    if let Some((lo, hi)) = bpm_range {
-        while bpm0 < lo * 0.97 && bpm0 * 2.0 <= hi * 1.03 {
-            bpm0 *= 2.0;
-        }
-        while bpm0 > hi * 1.03 && bpm0 / 2.0 >= lo * 0.97 {
-            bpm0 /= 2.0;
-        }
-    }
+    // A genre hint is a *soft* prior: it tilts the scoring toward the genre's
+    // tempo range without excluding the rest. Measured on a real 157-track
+    // library against librosa: a hard restriction to the hinted range forced a
+    // ~172 BPM collab into "house tempo" (116) just because one listed artist
+    // is a house artist; octave folding alone missed 3:2 errors. The prior
+    // keeps strong evidence winning and breaks ties the genre's way.
+    let (center, width) = match bpm_range {
+        Some((lo, hi)) => ((lo * hi).sqrt(), 0.45),
+        None => (125.0, 1.0),
+    };
+    let bpm0 = estimate_tempo(&onset, fps, center, width);
     let (bpm, phase_t, grid_conf) = fit_grid(&onset, bpm0, fps);
     let beat = 60.0 / bpm;
 
@@ -485,7 +493,11 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
 
     let (key_name, camelot, key_conf) = key(&sp);
     let sig_rms_db = 20.0 * ((x.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt() + 1e-9).log10();
-    let gain_db = (-11.0 - sig_rms_db).clamp(-9.0, 9.0);
+    // Loudness target -11 dB RMS, but never boost a track's peaks past -1 dBFS:
+    // an uncapped +9 dB on a quiet, dynamic recording drove the master limiter
+    // into audible pumping. Quiet tracks end up a little quieter instead.
+    let peak_db = 20.0 * (x.iter().fold(0f32, |m, v| m.max(v.abs())) as f64 + 1e-9).log10();
+    let gain_db = (-11.0 - sig_rms_db).min(-1.0 - peak_db).clamp(-9.0, 9.0);
 
     let mut spec_mean = vec![0f64; BINS];
     for f in 0..nfr {
@@ -518,6 +530,7 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
         outro_bar,
         bar_energy: bar_energy.iter().map(|v| (v * 1000.0).round() / 1000.0).collect(),
         gain_db,
+        peak_db,
         centroid,
         onset_rate,
         wave: overview(&sp, x, low_bins.max(1), hi_bin),
@@ -638,6 +651,15 @@ pub(crate) mod tests {
         assert!((a.bpm - 124.0).abs() < 0.02, "bpm {}", a.bpm);
         assert_eq!(a.drops, vec![24, 80], "drops {:?} sections {:?}", a.drops, a.sections);
         assert!(a.breaks.contains(&56), "breaks {:?}", a.breaks);
+    }
+
+    #[test]
+    fn gain_never_pushes_peaks_over_minus_one_dbfs() {
+        let mut pcm = synth(124.0, 0.5, &LAYOUT, 22_050, 3);
+        pcm.samples.iter_mut().for_each(|v| *v *= 0.05); // very quiet master
+        let a = analyze_pcm(&pcm, None);
+        assert!(a.peak_db + a.gain_db <= -0.99, "peak {} + gain {} would clip", a.peak_db, a.gain_db);
+        assert!(a.gain_db > 0.0, "a quiet track should still be lifted");
     }
 
     #[test]

@@ -12,6 +12,12 @@ try {
   /* storage unavailable: default dark */
 }
 
+if (import.meta.env.DEV) {
+  // Console/CDP handle for measuring the audio chain: `await selectaSelfTest()`.
+  const { selfTest } = await import("@selecta/engine");
+  Object.assign(window, { selectaSelfTest: selfTest });
+}
+
 if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
   const { installMockBackend } = await import("./dev/mock-backend");
   await installMockBackend();
