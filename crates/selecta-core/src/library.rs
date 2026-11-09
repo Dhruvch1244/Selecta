@@ -41,6 +41,8 @@ pub struct TrackSummary {
     pub mood: Option<String>,
     /// Why analysis failed, if it did (shown in the browser; retried when the file changes).
     pub error: Option<String>,
+    /// A current vocal stem exists (mashups, acapellas, vocal kills work).
+    pub stems: bool,
 }
 
 #[derive(Serialize, TS, Clone, Debug)]
@@ -104,8 +106,16 @@ impl Library {
         if !cols.iter().any(|c| c == "llm_tags") {
             conn.execute("ALTER TABLE tracks ADD COLUMN llm_tags TEXT", [])?;
         }
-        if !cols.iter().any(|c| c == "analysis_error") {
-            conn.execute("ALTER TABLE tracks ADD COLUMN analysis_error TEXT", [])?;
+        for (col, ty) in [
+            ("analysis_error", "TEXT"),
+            ("vocals", "TEXT"),
+            ("vocal_env", "TEXT"),
+            ("stems_mtime", "INTEGER NOT NULL DEFAULT 0"),
+            ("stems_error", "TEXT"),
+        ] {
+            if !cols.iter().any(|c| c == col) {
+                conn.execute(&format!("ALTER TABLE tracks ADD COLUMN {col} {ty}"), [])?;
+            }
         }
         Ok(Library { conn: Mutex::new(conn) })
     }
@@ -169,7 +179,8 @@ impl Library {
         let mut st = conn.prepare(
             "SELECT id, path, artist, title, album, genre_tag, duration, analysis, analysis_mtime >= mtime AND analysis_version = ?1,
                     json_extract(llm_tags, '$.mood'),
-                    CASE WHEN analysis_mtime >= mtime THEN analysis_error END
+                    CASE WHEN analysis_mtime >= mtime THEN analysis_error END,
+                    vocals IS NOT NULL AND stems_mtime >= mtime
              FROM tracks ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE",
         )?;
         let rows = st.query_map([ANALYSIS_VERSION], |r| {
@@ -189,6 +200,7 @@ impl Library {
                 camelot: parsed.as_ref().and_then(|v| v["camelot"].as_str().map(String::from)),
                 mood: r.get::<_, Option<String>>(9)?.filter(|m| !m.is_empty()),
                 error: r.get(10)?,
+                stems: r.get(11)?,
             })
         })?;
         rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
@@ -220,7 +232,8 @@ impl Library {
             if let Some(a) = self.analysis(&t.id)? {
                 let tags = self.tags(&t.id)?;
                 let genres = genres::classify_with(&t.genre_tag, &t.artist, &t.path, Some(a.bpm), tags.as_ref());
-                out.push(Candidate { track: t, analysis: a, genres, tags });
+                let vocals = if t.stems { self.vocal_env(&t.id)?.map(|env| crate::stems::vocal_bars(&env, &a)) } else { None };
+                out.push(Candidate { track: t, analysis: a, genres, tags, vocals });
             }
         }
         Ok(out)
@@ -303,6 +316,53 @@ impl Library {
             Some(j) => Some(serde_json::from_str(&j)?),
             None => None,
         })
+    }
+
+    /// Tracks with no current vocal stem (and no failure at this mtime), in library order.
+    pub fn needs_stems(&self) -> Result<Vec<(String, PathBuf)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn.prepare(
+            "SELECT id, path FROM tracks
+             WHERE NOT (vocals IS NOT NULL AND stems_mtime >= mtime)
+               AND NOT (stems_error IS NOT NULL AND stems_mtime >= mtime)
+             ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, PathBuf::from(r.get::<_, String>(1)?))))?;
+        rows.collect::<std::result::Result<_, _>>().map_err(Into::into)
+    }
+
+    pub fn save_stems(&self, id: &str, vocals: &Path, env: &[f32]) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE tracks SET vocals=?1, vocal_env=?2, stems_mtime=mtime, stems_error=NULL WHERE id=?3",
+            params![vocals.to_string_lossy(), serde_json::to_string(env)?, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_stems_error(&self, id: &str, msg: &str) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE tracks SET stems_error=?1, stems_mtime=mtime WHERE id=?2", params![msg, id])?;
+        Ok(())
+    }
+
+    /// Forget every stem (after the stem files were deleted, or a model change).
+    pub fn clear_stems(&self) -> Result<()> {
+        self.conn.lock().unwrap().execute("UPDATE tracks SET vocals=NULL, vocal_env=NULL, stems_error=NULL, stems_mtime=0", [])?;
+        Ok(())
+    }
+
+    /// The current vocal stem file of a track, if any.
+    pub fn vocals_path(&self, id: &str) -> Result<Option<PathBuf>> {
+        let conn = self.conn.lock().unwrap();
+        let s: Option<Option<String>> = conn
+            .query_row("SELECT CASE WHEN stems_mtime >= mtime THEN vocals END FROM tracks WHERE id=?1", [id], |r| r.get(0))
+            .optional()?;
+        Ok(s.flatten().map(PathBuf::from))
+    }
+
+    pub fn vocal_env(&self, id: &str) -> Result<Option<Vec<f32>>> {
+        let conn = self.conn.lock().unwrap();
+        let s: Option<Option<String>> = conn.query_row("SELECT vocal_env FROM tracks WHERE id=?1", [id], |r| r.get(0)).optional()?;
+        Ok(s.flatten().and_then(|j| serde_json::from_str(&j).ok()))
     }
 
     pub fn path_of(&self, id: &str) -> Result<Option<PathBuf>> {

@@ -15,9 +15,12 @@ export interface LoadedTrack {
   id: string;
   artist: string;
   title: string;
+  /** 2 channels, or 4 for a stem track (instrumental L/R, vocals L/R; see stems.ts). */
   buffer: AudioBuffer;
   analysis: Analysis;
 }
+
+export type Stem = "vox" | "inst";
 
 const DECLICK = 0.004;
 /** dB to linear for isolator bands; at or below the kill level the band is fully off. */
@@ -38,6 +41,8 @@ export class Deck {
   private stoppedAt = Infinity;
   private readonly vca: GainNode;
   private readonly trimNode: GainNode;
+  /** Stem gains (linear). On a 2-channel track `inst` is the whole track and `vox` has nothing to do. */
+  private readonly stem: Record<Stem, GainNode>;
   /** Isolator band gains (linear; 0 = full kill). */
   private readonly eq: Record<Band, GainNode>;
   private readonly eqIn: GainNode;
@@ -107,9 +112,25 @@ export class Deck {
     this.analyser = ctx.createAnalyser();
     this.analyser.fftSize = 1024;
     this.meterBuf = new Float32Array(this.analyser.fftSize);
-    this.vca
-      .connect(this.trimNode)
-      .connect(this.eqIn);
+    // Stems: split the (up to) 4-channel source into instrumental and vocal
+    // pairs, each with its own gain, then sum. A 2-channel track lands
+    // entirely on the instrumental pair (discrete up-mix zero-fills 2-3).
+    const split4 = ctx.createChannelSplitter(4);
+    split4.channelInterpretation = "discrete";
+    this.stem = { inst: ctx.createGain(), vox: ctx.createGain() };
+    const instM = ctx.createChannelMerger(2);
+    const voxM = ctx.createChannelMerger(2);
+    split4.connect(instM, 0, 0);
+    split4.connect(instM, 1, 1);
+    split4.connect(voxM, 2, 0);
+    split4.connect(voxM, 3, 1);
+    instM.connect(this.stem.inst).connect(this.trimNode);
+    voxM.connect(this.stem.vox).connect(this.trimNode);
+    this.vca.channelCountMode = "explicit";
+    this.vca.channelCount = 4;
+    this.vca.channelInterpretation = "discrete";
+    this.vca.connect(split4);
+    this.trimNode.connect(this.eqIn);
     // FX slot after the filters: inserts mute `slotDry` for their window and
     // feed `slotOut` themselves; sends tap `slotIn` and return on `tail`,
     // which is post-fader so echo/reverb tails ring on after a fader cut.
@@ -139,6 +160,10 @@ export class Deck {
   get grid(): GridSpec | null {
     return this.track ? { beat: this.track.analysis.beat, downbeat0: this.track.analysis.downbeat0 } : null;
   }
+  /** True when the loaded track has a vocal stem (vox/inst are separable). */
+  get hasStems(): boolean {
+    return (this.track?.buffer.numberOfChannels ?? 0) >= 4;
+  }
   get rate(): number {
     return this.base.rate;
   }
@@ -149,11 +174,20 @@ export class Deck {
 
   load(track: LoadedTrack): void {
     this.stop();
+    if (track.buffer.numberOfChannels === 1) {
+      // The stem path maps channels discretely, so a mono file must be made
+      // stereo here or it would play on the left only.
+      const st = this.ctx.createBuffer(2, track.buffer.length, track.buffer.sampleRate);
+      const m = track.buffer.getChannelData(0);
+      st.copyToChannel(m, 0);
+      st.copyToChannel(m, 1);
+      track = { ...track, buffer: st };
+    }
     this.track = track;
     this.rev = null;
     this.busyUntil = 0;
     this.ov = null;
-    const chans = Array.from({ length: Math.min(2, track.buffer.numberOfChannels) }, (_, i) => track.buffer.getChannelData(i));
+    const chans = Array.from({ length: Math.min(4, track.buffer.numberOfChannels) }, (_, i) => track.buffer.getChannelData(i));
     this.wave = computeWaveform(chans, track.buffer.sampleRate);
     this.base = { t: this.ctx.currentTime, pos: posOfBar(this.gridOrThrow(), track.analysis.startBar), rate: 1 };
     this.stoppedAt = this.ctx.currentTime;
@@ -242,6 +276,13 @@ export class Deck {
     const hp = v > 0 ? 10 * Math.pow(6000 / 10, v) : 10;
     this.filterLp.frequency.setTargetAtTime(lp, t, 0.01);
     this.filterHp.frequency.setTargetAtTime(hp, t, 0.01);
+  }
+  /** Stem level 0..1 (a kill is 0). */
+  setStem(stem: Stem, v: number): void {
+    this.stem[stem].gain.setTargetAtTime(v, this.ctx.currentTime, 0.008);
+  }
+  stemLevel(stem: Stem): number {
+    return this.stem[stem].gain.value;
   }
   setFader(v: number): void {
     // Equal-power-ish curve: a fader at 50% should sound half as loud, not silent.
@@ -359,6 +400,10 @@ export class Deck {
     this.filterLp.frequency.setValueAtTime(22000, at);
     this.fader.gain.cancelScheduledValues(at);
     this.fader.gain.setValueAtTime(1, at);
+    for (const g of [this.stem.vox.gain, this.stem.inst.gain]) {
+      g.cancelScheduledValues(at);
+      g.setValueAtTime(1, at);
+    }
   }
 
   /** Apply scheduled moves from a transition schedule (see schedule.ts). */
@@ -392,6 +437,10 @@ export class Deck {
     switch (t) {
       case "fader":
         return this.fader.gain;
+      case "vox":
+        return this.stem.vox.gain;
+      case "inst":
+        return this.stem.inst.gain;
       case "low":
         return this.eq.low.gain;
       case "high":

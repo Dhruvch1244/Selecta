@@ -5,7 +5,8 @@
 import { Engine, type DeckId, matchRate, posOfBar } from "@selecta/engine";
 import type { Analysis, TrackSummary } from "@selecta/protocol";
 import { create } from "zustand";
-import { api, readAudio, type Settings } from "./api";
+import { api, type Settings } from "./api";
+import { loadTrackAudio } from "./track-audio";
 
 let engine: Engine | null = null;
 /** The engine is created on first use, which is always a user gesture (autoplay policy). */
@@ -34,6 +35,7 @@ interface State {
   scanning: boolean;
   analysing: { done: number; total: number } | null;
   tagging: { done: number; total: number } | null;
+  stemming: { done: number; total: number } | null;
   status: string;
   decks: Record<DeckId, DeckView>;
   refreshLibrary: () => Promise<void>;
@@ -57,6 +59,7 @@ export const useApp = create<State>((set, get) => {
     scanning: false,
     analysing: null,
     tagging: null,
+    stemming: null,
     status: "",
     decks: { A: emptyDeck(), B: emptyDeck() },
 
@@ -103,11 +106,17 @@ export const useApp = create<State>((set, get) => {
         };
         const analysing = pick("analysis");
         const tagging = pick("tagging");
+        const stemming = pick("stems");
         const before = get();
-        set({ analysing, tagging });
-        if (analysing || tagging) {
-          if ((analysing && analysing.done % 10 === 0) || (tagging && tagging.done !== before.tagging?.done)) void get().refreshLibrary();
-          setTimeout(poll, 800);
+        set({ analysing, tagging, stemming });
+        if (analysing || tagging || stemming) {
+          if (
+            (analysing && analysing.done % 10 === 0) ||
+            (tagging && tagging.done !== before.tagging?.done) ||
+            (stemming && stemming.done !== before.stemming?.done)
+          )
+            void get().refreshLibrary();
+          setTimeout(poll, analysing || tagging ? 800 : 2500);
         } else void get().refreshLibrary();
       };
       void poll();
@@ -119,10 +128,10 @@ export const useApp = create<State>((set, get) => {
       patchDeck(id, { ...emptyDeck(), trackId: track.id, artist: track.artist, title: track.title, loading: true });
       try {
         // Analysis may run now (Rust, off the UI thread) while the browser decodes in parallel.
-        const [analysis, bytes] = await Promise.all([api.analysis(track.id), readAudio(track.path)]);
-        const buffer = await eng.decode(bytes);
+        const loaded = await loadTrackAudio(track);
+        const analysis = loaded.analysis;
         if (get().decks[id].trackId !== track.id) return; // a newer load won
-        eng.decks[id].load({ id: track.id, artist: track.artist, title: track.title, buffer, analysis });
+        eng.decks[id].load(loaded);
         patchDeck(id, { analysis, loading: false, playing: false, rate: 1 });
         void get().refreshLibrary();
       } catch (e) {

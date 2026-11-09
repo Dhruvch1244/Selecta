@@ -18,6 +18,7 @@ use selecta_core::jobs::{GroupProgress, Priority, Scheduler};
 use selecta_core::library::{Library, ScanReport, SetSummary, TrackSummary};
 use selecta_core::llm::{self, AiConfig, AiStatus};
 use selecta_core::planner::{self, SetPlan};
+use selecta_core::stems::{self, Separator, StemPaths, StemQueue, StemsStatus};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
@@ -27,6 +28,13 @@ struct Settings {
     music_dirs: Vec<String>,
     #[serde(default)]
     ai: AiConfig,
+    /// Separate vocal stems in the background once the stem engine is installed.
+    #[serde(default = "yes")]
+    stems: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// (done, total) for library tagging, shown alongside scheduler groups.
@@ -42,6 +50,8 @@ struct App {
     jobs: Arc<Scheduler>,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    stems: Arc<StemQueue>,
+    stem_paths: StemPaths,
 }
 
 type Res<T> = Result<T, String>;
@@ -85,10 +95,18 @@ async fn library_scan(app: State<'_, App>) -> Res<ScanReport> {
     let (lib, jobs) = (app.lib.clone(), app.jobs.clone());
     let ai = app.settings.lock().unwrap().ai.clone();
     let tagging = app.tagging.clone();
+    let want_stems = app.settings.lock().unwrap().stems && app.stem_paths.installed();
+    let (stem_queue, stem_paths) = (app.stems.clone(), app.stem_paths.clone());
     blocking(move || {
         let rep = lib.scan(&dirs).map_err(err)?;
         if ai.tag_library && llm::status(&ai).available {
             queue_tagging(&lib, &jobs, &ai, &tagging);
+        }
+        if want_stems {
+            if let Ok(todo) = lib.needs_stems() {
+                stem_queue.push(todo, false);
+                drain_stems(&lib, &jobs, &stem_queue, &stem_paths);
+            }
         }
         for (id, path, hint) in lib.needs_analysis().map_err(err)? {
             let lib = lib.clone();
@@ -264,6 +282,114 @@ async fn ai_test(app: State<'_, App>) -> Res<String> {
     .await
 }
 
+/// Run the stem worker until the queue is empty. One worker for the whole
+/// app (it owns the GPU); a second call while it runs is a no-op, and the
+/// running loop picks up whatever was queued meanwhile.
+fn drain_stems(lib: &Arc<Library>, jobs: &Arc<Scheduler>, q: &Arc<StemQueue>, paths: &StemPaths) {
+    if !paths.installed() || q.running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let (lib, q, paths) = (lib.clone(), q.clone(), paths.clone());
+    jobs.submit("stems-worker", "stems", Priority::Idle, move |cancel| {
+        let mut sep: Option<Separator> = None;
+        loop {
+            while let Some((id, path)) = q.pop() {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                if sep.is_none() {
+                    match Separator::spawn(&paths) {
+                        Ok(s) => {
+                            *q.device.lock().unwrap() = Some(s.device.clone());
+                            sep = Some(s);
+                        }
+                        Err(e) => {
+                            *q.detail.lock().unwrap() = e;
+                            q.clear();
+                            break;
+                        }
+                    }
+                }
+                let out = paths.vocals_file(&id);
+                match sep.as_mut().unwrap().vocals(&id, &path, &out) {
+                    Ok(env) => {
+                        let _ = lib.save_stems(&id, &out, &env);
+                    }
+                    Err(e) => {
+                        let _ = lib.save_stems_error(&id, &e);
+                        if e.contains("exited") {
+                            sep = None; // respawn for the next track
+                        }
+                    }
+                }
+                q.done.fetch_add(1, Ordering::Relaxed);
+            }
+            q.running.store(false, Ordering::SeqCst);
+            // Something queued between the last pop and the flag? Take it, unless another drain did.
+            if cancel.is_cancelled() || q.is_empty() || q.running.swap(true, Ordering::SeqCst) {
+                break;
+            }
+        }
+        if q.is_empty() {
+            q.done.store(0, Ordering::Relaxed);
+            q.total.store(0, Ordering::Relaxed);
+        }
+    });
+}
+
+#[tauri::command(async)]
+async fn stems_status(app: State<'_, App>) -> Res<StemsStatus> {
+    Ok(app.stems.status(&app.stem_paths))
+}
+
+/// Install the stem engine in the background; progress shows in `stems_status`.
+#[tauri::command(async)]
+async fn stems_install(app: State<'_, App>) -> Res<()> {
+    if app.stems.installing.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let (q, paths, lib, jobs) = (app.stems.clone(), app.stem_paths.clone(), app.lib.clone(), app.jobs.clone());
+    let enabled = app.settings.lock().unwrap().stems;
+    std::thread::spawn(move || {
+        let mut log = |m: &str| *q.detail.lock().unwrap() = m.to_string();
+        let res = stems::install(&paths, &mut log);
+        if let Err(e) = &res {
+            *q.detail.lock().unwrap() = format!("Install failed: {e}");
+        }
+        q.installing.store(false, Ordering::SeqCst);
+        if res.is_ok() && enabled {
+            if let Ok(todo) = lib.needs_stems() {
+                q.push(todo, false);
+                drain_stems(&lib, &jobs, &q, &paths);
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Separate these tracks next (the set that's about to play).
+#[tauri::command(async)]
+async fn stems_prioritise(app: State<'_, App>, ids: Vec<String>) -> Res<()> {
+    if !app.stem_paths.installed() || !app.settings.lock().unwrap().stems {
+        return Ok(());
+    }
+    let (lib, jobs, q, paths) = (app.lib.clone(), app.jobs.clone(), app.stems.clone(), app.stem_paths.clone());
+    blocking(move || {
+        let todo: Vec<_> = lib.needs_stems().map_err(err)?.into_iter().filter(|(id, _)| ids.contains(id)).collect();
+        q.push(todo, true);
+        drain_stems(&lib, &jobs, &q, &paths);
+        Ok(())
+    })
+    .await
+}
+
+/// Path of a track's vocal stem, if separated.
+#[tauri::command(async)]
+async fn track_vocals(app: State<'_, App>, id: String) -> Res<Option<String>> {
+    let lib = app.lib.clone();
+    blocking(move || Ok(lib.vocals_path(&id).map_err(err)?.filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()))).await
+}
+
 #[tauri::command(async)]
 async fn sets_list(app: State<'_, App>) -> Res<Vec<SetSummary>> {
     let lib = app.lib.clone();
@@ -289,6 +415,11 @@ async fn jobs_progress(app: State<'_, App>) -> Res<Vec<GroupProgress>> {
     if total > 0 {
         groups.push(GroupProgress { group: "tagging".into(), done: app.tagging.done.load(Ordering::Relaxed), total });
     }
+    groups.retain(|g| g.group != "stems");
+    let st = app.stems.total.load(Ordering::Relaxed);
+    if st > 0 {
+        groups.push(GroupProgress { group: "stems".into(), done: app.stems.done.load(Ordering::Relaxed), total: st });
+    }
     Ok(groups)
 }
 
@@ -313,9 +444,13 @@ pub fn run() {
                 std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| Settings {
                     music_dirs: app.path().audio_dir().ok().map(|d| vec![d.to_string_lossy().to_string()]).unwrap_or_default(),
                     ai: AiConfig::default(),
+                    stems: true,
                 });
             allow_dirs(app.handle(), &settings.music_dirs);
             let lib = Arc::new(Library::open(&data.join("library.db")).map_err(|e| e.to_string())?);
+            let stem_paths = StemPaths::new(&data);
+            let _ = std::fs::create_dir_all(&stem_paths.out);
+            let _ = app.asset_protocol_scope().allow_directory(&stem_paths.out, false);
             let workers = std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(2);
             app.manage(App {
                 tagging: Arc::new(TagProgress::default()),
@@ -323,6 +458,8 @@ pub fn run() {
                 jobs: Scheduler::new(workers),
                 settings: Mutex::new(settings),
                 settings_path,
+                stems: StemQueue::new(),
+                stem_paths,
             });
             Ok(())
         })
@@ -339,7 +476,11 @@ pub fn run() {
             set_delete,
             library_tag,
             ai_status,
-            ai_test
+            ai_test,
+            stems_status,
+            stems_install,
+            stems_prioritise,
+            track_vocals
         ])
         .run(tauri::generate_context!())
         .expect("error while running Selecta");

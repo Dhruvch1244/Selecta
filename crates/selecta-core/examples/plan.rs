@@ -36,8 +36,9 @@ fn main() {
                 camelot: Some(a.camelot.clone()),
                 mood: None,
                 error: None,
+                stems: false,
             };
-            Some(Candidate { genres: genres::classify("", &artist, p, Some(a.bpm)), track, analysis: a, tags: None })
+            Some(Candidate { genres: genres::classify("", &artist, p, Some(a.bpm)), track, analysis: a, tags: None, vocals: None })
         })
         .collect();
     let artists: Vec<String> = cands.iter().map(|c| c.track.artist.clone()).collect();

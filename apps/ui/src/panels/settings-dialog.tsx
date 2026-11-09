@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { AiConfig, AiStatus } from "@selecta/protocol";
+import type { AiConfig, AiStatus, StemsStatus } from "@selecta/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/dsgn/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/dsgn/dialog";
@@ -122,8 +122,87 @@ export function SettingsDialog({ open: isOpen, onOpenChange }: { open: boolean; 
             </>
           )}
         </Section>
+
+        <StemsSection />
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * The stem engine: a one-time install (PyTorch + Demucs in Selecta's own
+ * env), then vocal stems for the whole library in the background, the set
+ * you're about to play first.
+ */
+function StemsSection() {
+  const settings = useApp((s) => s.settings);
+  const stemming = useApp((s) => s.stemming);
+  const { saveSettings, watchJobs, scan } = useApp.getState();
+  const [st, setSt] = React.useState<StemsStatus | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const s = await api.stemsStatus().catch(() => null);
+      if (!alive) return;
+      // Install just finished: the backend has queued the library; show its progress.
+      setSt((prev) => {
+        if (prev?.installing && s?.installed) watchJobs();
+        return s;
+      });
+      timer = setTimeout(poll, s?.installing ? 1000 : 4000);
+    };
+    void poll();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [watchJobs]);
+  if (!settings) return null;
+  const state = !st ? "…" : st.installing ? "Installing" : st.installed ? `Ready${st.device ? ` · ${st.device === "cuda" ? "GPU" : "CPU"}` : ""}` : "Not installed";
+  return (
+    <Section title="Stems">
+      <Row
+        label="Vocal / instrumental stems"
+        hint="Powers mashups, acapella builds, bootleg moves and the VOX/INS kills. Uses the Demucs model on your GPU (CPU works, slower)."
+      >
+        <span className="rounded-sm border border-border bg-muted px-2 py-0.5 font-mono text-[11px]" role="status">{state}</span>
+      </Row>
+      {st && !st.installed && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="xs"
+            variant="secondary"
+            disabled={st.installing}
+            onClick={async () => {
+              await api.stemsInstall().catch(() => {});
+              setSt({ ...st, installing: true, detail: "Starting…" });
+            }}
+          >
+            {st.installing ? "Installing…" : "Install stem engine"}
+          </Button>
+          <span className="text-[11px] text-muted-foreground">One-time download: about 3 GB with an NVIDIA GPU, 300 MB without.</span>
+        </div>
+      )}
+      {st?.detail && (st.installing || !st.installed || st.detail.startsWith("Install failed")) && (
+        <p className="truncate font-mono text-[10.5px] text-muted-foreground" data-selectable title={st.detail}>{st.detail}</p>
+      )}
+      {st?.installed && (
+        <Row label="Separate in the background" hint={stemming ? `${stemming.done} of ${stemming.total} tracks done (~15 s each on a GPU)` : "New tracks are separated after each scan."}>
+          <Switch
+            checked={settings.stems}
+            onCheckedChange={async (v) => {
+              await saveSettings({ ...settings, stems: v });
+              if (v) {
+                await scan();
+                watchJobs();
+              }
+            }}
+            aria-label="Separate stems in the background"
+          />
+        </Row>
+      )}
+    </Section>
   );
 }
 

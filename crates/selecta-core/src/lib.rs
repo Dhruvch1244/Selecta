@@ -12,6 +12,7 @@ pub mod jobs;
 pub mod library;
 pub mod llm;
 pub mod planner;
+pub mod stems;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
