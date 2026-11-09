@@ -2,6 +2,7 @@ import * as React from "react";
 import { HintBar } from "@/components/studio/hint-bar";
 import { inTauri } from "@/lib/api";
 import { onFrame } from "@/lib/frame";
+import { startNowPlaying } from "@/lib/now-playing";
 import { getEngine, useApp } from "@/lib/store";
 import { Browser } from "@/panels/browser";
 import { DeckLane } from "@/panels/deck-lane";
@@ -27,7 +28,11 @@ export function App() {
     } else {
       useApp.getState().setStatus("UI-only mode: start the full app with `npm run dev` to load your library.");
     }
-    return stop;
+    const stopNowPlaying = startNowPlaying();
+    return () => {
+      stop();
+      stopNowPlaying();
+    };
   }, []);
 
   React.useEffect(() => {
