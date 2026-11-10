@@ -12,7 +12,58 @@ interface Fixture {
   analysis: Analysis;
 }
 
+/**
+ * `?mock=real`: the user's real library, exported from a copy of their
+ * library.db with real analysis, stems and planner output (see
+ * `examples/plan_db.rs`). dev-fixtures/lib and dev-fixtures/libstems are symlinks
+ * to the music and stem folders. Gitignored, never bundled.
+ */
+async function installRealLibrary(): Promise<boolean> {
+  interface RealTrack { id: string; path: string; artist: string; title: string; album: string; genreTag: string; duration: number; analysis: Analysis; vocals: string | null; mood: string | null }
+  const lib: RealTrack[] | null = await fetch("/__fixtures__/real-library.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const plans: Record<string, SetPlan> = await fetch("/__fixtures__/real-plans.json").then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  if (!lib) return false;
+  const byId = new Map(lib.map((t) => [t.id, t]));
+  const tracks: TrackSummary[] = lib.map((t) => ({ id: t.id, path: t.path, artist: t.artist, title: t.title, album: t.album, genreTag: t.genreTag, duration: t.duration, analyzed: true, bpm: t.analysis.bpm, key: t.analysis.key, camelot: t.analysis.camelot, mood: t.mood, error: null, stems: !!t.vocals }));
+  const planList = Object.entries(plans).map(([prompt, p], i) => ({ ...p, id: `real${i}`, prompt }));
+  const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
+    settings_get: () => ({ musicDirs: ["/__fixtures__/lib"], ai: { provider: "off", model: "sonnet", binary: "claude", curate: false, tagLibrary: false }, stems: true, keylock: true }),
+    ai_status: () => ({ available: false, provider: "off", model: "", detail: "AI off (real-library mock)" }),
+    library_tracks: () => tracks,
+    library_scan: () => ({ found: tracks.length, added: 0, updated: 0, removed: 0 }),
+    track_analysis: (a) => byId.get(String(a.id))?.analysis,
+    track_vocals: (a) => byId.get(String(a.id))?.vocals ?? null,
+    jobs_progress: () => [],
+    plan_set: (a) => structuredClone(planList.find((p) => p.prompt === a.prompt) ?? planList[0]),
+    sets_list: () => planList.map((p) => ({ id: p.id, created: p.created, title: p.title, prompt: p.prompt, tracks: p.tracks.length })),
+    set_get: (a) => structuredClone(planList.find((p) => p.id === a.id) ?? planList[0]),
+    stems_status: () => ({ installed: true, installing: false, device: "cuda", detail: "", done: 0, total: 0 }),
+    now_playing: (a) => ((window as unknown as { __nowPlaying: unknown }).__nowPlaying = a.np),
+  };
+  const noop = () => null;
+  for (const k of ["settings_set", "set_delete", "library_tag", "stems_install", "stems_prioritise", "plugin:event|unlisten"]) handlers[k] = noop;
+  handlers["plugin:event|listen"] = () => 1;
+  install(handlers);
+  return true;
+}
+
+function install(handlers: Record<string, (args: Record<string, unknown>) => unknown>) {
+  Object.assign(window, {
+    __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
+    __TAURI_INTERNALS__: {
+      invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+        const h = handlers[cmd];
+        if (!h) throw new Error(`mock backend: no handler for ${cmd}`);
+        return h(args);
+      },
+      convertFileSrc: (p: string) => p,
+      transformCallback: () => 0,
+    },
+  });
+}
+
 export async function installMockBackend(): Promise<void> {
+  if (new URLSearchParams(location.search).get("mock") === "real" && (await installRealLibrary())) return;
   const fixtures: Fixture[] = await fetch("/__fixtures__/library.json").then((r) => (r.ok ? r.json() : []));
   const byId = new Map<string, Fixture>();
   const tracks: TrackSummary[] = fixtures.map((f, i) => {

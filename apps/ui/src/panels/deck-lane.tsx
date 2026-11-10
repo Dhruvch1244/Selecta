@@ -1,10 +1,11 @@
 import * as React from "react";
-import type { DeckId } from "@selecta/engine";
+import { fire, type Deck, type DeckId } from "@selecta/engine";
 import { Button } from "@/components/dsgn/button";
 import { Panel } from "@/components/studio/panel";
 import { DetailWave, OverviewWave } from "@/components/studio/waveform";
 import { onFrame } from "@/lib/frame";
-import { hintProps } from "@/lib/hint";
+import { hintProps, useHintStore } from "@/lib/hint";
+import { cn } from "@/lib/utils";
 import { getEngine, useApp } from "@/lib/store";
 
 export const DECK_COLOR: Record<DeckId, string> = { A: "var(--cyan)", B: "var(--magenta)" };
@@ -93,6 +94,7 @@ export function DeckLane({ id }: { id: DeckId }) {
         </div>
         <span ref={readout} className="font-mono text-[11px] tabular-nums text-muted-foreground" />
       </div>
+      <PerformRow deck={deck} color={color} enabled={!!a} />
       <div className="relative min-h-0 flex-1">
         <DetailWave deck={deck} color={color} className="h-full" />
         {view.loading && <Overlay>Analysing and decoding…</Overlay>}
@@ -100,6 +102,89 @@ export function DeckLane({ id }: { id: DeckId }) {
       </div>
       <OverviewWave deck={deck} color={color} className="h-6" onSeek={(pos) => deck.seek(pos)} />
     </Panel>
+  );
+}
+
+const LOOPS: [string, number][] = [["½", 0.5], ["1", 1], ["2", 2], ["4", 4], ["8", 8], ["16", 16]];
+
+/**
+ * Performance controls, as on a CDJ/Mixxx deck: beat loops, beat jumps and
+ * the turntable moves. Everything quantises to the next beat, so a hand
+ * move lands like a planned one. Loops are native buffer loops on the grid,
+ * so a looped deck stays locked to the other one.
+ */
+function PerformRow({ deck, color, enabled }: { deck: Deck; color: string; enabled: boolean }) {
+  const [loop, setLoop] = React.useState<number | null>(null);
+  React.useEffect(
+    () =>
+      onFrame(() => {
+        const b = deck.loop?.beats ?? null;
+        setLoop((p) => (p === b ? p : b));
+      }),
+    [deck],
+  );
+  const busy = (msg: string) => useHintStore.getState().set({ label: msg, value: "Wait for the current move to finish" });
+  const move = (id: string, beats: number, jumpTo?: number) => {
+    if (!deck.playing) return useHintStore.getState().set({ label: "Play the deck first" });
+    const eng = getEngine();
+    const at = deck.nextBeat(1, eng.ctx.currentTime + 0.03);
+    if (!fire({ ctx: eng.ctx, master: eng.fxBus }, id, { deck, at, beats, ...(jumpTo !== undefined ? { jumpTo } : {}) })) busy("Deck busy");
+  };
+  // "Pull up": back to the build before the last drop, so the drop comes round again.
+  const rewind = () => {
+    const a = deck.track?.analysis;
+    if (!a) return;
+    const bar = Math.floor(deck.bar());
+    const drop = [...a.drops].reverse().find((d) => d <= bar - 2);
+    move("rewind:8", 8, drop !== undefined ? Math.max(a.startBar, drop - 8) : Math.max(a.startBar, bar - 16));
+  };
+  const pad = "h-6 rounded-[2px] border px-1.5 font-mono text-[10px] tracking-wide transition-colors duration-100 disabled:opacity-30 active:translate-y-px";
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Deck ${deck.id} performance`}>
+      <span className="font-display text-[10px] uppercase tracking-wider text-[var(--ink-faint)]">Loop</span>
+      <div className="flex gap-0.5">
+        {LOOPS.map(([label, beats]) => {
+          const on = loop === beats;
+          return (
+            <button
+              key={label}
+              type="button"
+              disabled={!enabled}
+              aria-pressed={on}
+              onClick={() => (deck.setLoop(on ? null : beats) ? undefined : busy(on ? "Can't exit now" : "Can't loop now"))}
+              {...hintProps({ label: on ? `Release the ${label}-beat loop` : `Loop ${label} beat${beats === 1 ? "" : "s"}`, value: "Starts on the next beat; locked to the grid" })}
+              className={cn(pad, "min-w-7", on ? "border-transparent text-background" : "border-border bg-secondary text-foreground hover:border-[var(--ink-faint)]")}
+              style={on ? { background: color } : undefined}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <span className="ml-1 font-display text-[10px] uppercase tracking-wider text-[var(--ink-faint)]">Jump</span>
+      <div className="flex gap-0.5">
+        <button type="button" disabled={!enabled} onClick={() => deck.beatJump(-4)} className={cn(pad, "border-border bg-secondary")} {...hintProps({ label: "Jump back 4 bars", value: "On the next beat, in phase" })}>
+          −4
+        </button>
+        <button type="button" disabled={!enabled} onClick={() => deck.beatJump(4)} className={cn(pad, "border-border bg-secondary")} {...hintProps({ label: "Jump ahead 4 bars", value: "On the next beat, in phase" })}>
+          +4
+        </button>
+      </div>
+      <div className="ml-auto flex gap-0.5">
+        <button type="button" disabled={!enabled} onClick={rewind} className={cn(pad, "border-accent/60 bg-accent/15 text-accent hover:bg-accent/25")} {...hintProps({ label: "Rewind (pull up!)", value: "Wheels the track back and drops in again at the build before the last drop" })}>
+          REWIND
+        </button>
+        <button type="button" disabled={!enabled} onClick={() => move("backspin:2", 2)} className={cn(pad, "border-border bg-secondary")} {...hintProps({ label: "Backspin", value: "Spins back 2 beats, then plays on in place" })}>
+          SPIN
+        </button>
+        <button type="button" disabled={!enabled} onClick={() => move("tape_stop:2", 2)} className={cn(pad, "border-border bg-secondary")} {...hintProps({ label: "Brake", value: "Turntable power-down over 2 beats, then plays on in place" })}>
+          BRAKE
+        </button>
+        <button type="button" disabled={!enabled} onClick={() => move("echo:1/2", 4)} className={cn(pad, "border-border bg-secondary")} {...hintProps({ label: "Echo throw", value: "Half-beat echo on the last beat of the phrase" })}>
+          ECHO
+        </button>
+      </div>
+    </div>
   );
 }
 

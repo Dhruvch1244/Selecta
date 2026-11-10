@@ -158,6 +158,34 @@ struct PlanOptions {
     duration_min: Option<f64>,
     chaos: Option<f64>,
     seed: Option<u64>,
+    /// Style switches from the set builder; they override what the prompt implies.
+    rapid: Option<bool>,
+    mashups: Option<bool>,
+    smooth: Option<bool>,
+    turntablism: Option<bool>,
+}
+
+impl PlanOptions {
+    fn apply_style(&self, it: &mut intent::Intent) {
+        if let Some(r) = self.rapid {
+            it.rapid = r;
+        }
+        if let Some(m) = self.mashups {
+            it.mashups = if m { 0.95 } else { it.mashups.min(0.2) };
+        }
+        if let Some(s) = self.smooth {
+            it.smooth = s;
+            if s && self.chaos.is_none() {
+                it.chaos = it.chaos.min(0.35);
+            }
+        }
+        if let Some(t) = self.turntablism {
+            it.turntablism = t;
+        }
+        if let Some(c) = self.chaos {
+            it.chaos = c.clamp(0.0, 1.0);
+        }
+    }
 }
 
 /// Prompt -> saved set plan. Runs through the scheduler at `Now` priority
@@ -185,9 +213,7 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
                 it.duration_min = d;
                 it.duration_explicit = true;
             }
-            if let Some(c) = o.chaos {
-                it.chaos = c.clamp(0.0, 1.0);
-            }
+            o.apply_style(&mut it);
             let mut ai_notes = vec![];
             let ai_on = llm::status(&ai).available;
             let seed = o.seed.unwrap_or_else(|| {
@@ -202,9 +228,23 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
                     draft.notes.insert(0, "Instant draft by the rules: playable now, Claude is still curating.".into());
                     let _ = handle.emit("plan-draft", &draft);
                 }
-                say(&format!("Asking Claude ({}) to read the prompt", ai.model));
-                if let Err(e) = llm::refine_intent(&ai, &mut it) {
-                    ai_notes.push(format!("AI couldn't read the prompt ({e}); used rules."));
+                // Reading a prompt is a small job: the fast model does it in a few
+                // seconds, and its reading becomes a second, AI-informed draft
+                // long before the full curation lands.
+                let fast = AiConfig { model: "haiku".into(), ..ai.clone() };
+                say("Claude (haiku) is reading the prompt");
+                match llm::refine_intent(&fast, &mut it) {
+                    Ok(()) => {
+                        o.apply_style(&mut it); // switches and knobs set by hand win over the AI's reading
+                        if let Ok(mut draft) =
+                            planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation: None, keylock })
+                        {
+                            draft.notes.insert(0, "AI draft: Claude read the prompt; the full curation is still coming.".into());
+                            let _ = handle.emit("plan-draft", &draft);
+                            say("AI draft ready: playable now");
+                        }
+                    }
+                    Err(e) => ai_notes.push(format!("AI couldn't read the prompt ({e}); used rules.")),
                 }
             }
             let mut curation = None;

@@ -51,6 +51,8 @@ export class Conductor {
   private readonly fx: FxContext;
   /** Pitch-correct tempo changes (and apply planned key shifts) while preparing tracks. */
   keylock = false;
+  /** Tracks whose audio failed to load: skipped when their turn comes. */
+  private failed = new Set<SetTrack>();
 
   constructor(
     private readonly engine: Engine,
@@ -76,9 +78,19 @@ export class Conductor {
     this.loaded.clear();
     this.fired.clear();
     this.ending = false;
+    // A first track that won't load is dropped, not a dead set.
+    let track: LoadedTrack | null = null;
+    while (plan.tracks.length && !track) {
+      track = await this.prepare(0).catch(() => null);
+      if (!track) {
+        plan.tracks.splice(0, 1);
+        this.loaded.clear();
+      }
+    }
+    if (!track) throw new Error("None of this set's tracks could be loaded.");
     const first = plan.tracks[0]!;
+    first.trans = { ...first.trans, kind: "start" };
     const deck = this.engine.decks.A;
-    const track = await this.prepare(0);
     this.engine.decks.B.stop();
     deck.load(track);
     deck.resetMix();
@@ -129,7 +141,7 @@ export class Conductor {
     const cur = plan.tracks[this.index]!;
     const next = plan.tracks[this.index + 1]!;
     cur.outBar = b + 1;
-    next.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null };
+    next.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null, loopFrom: null, loopBars: null };
   }
 
   private prepare(i: number): Promise<LoadedTrack> {
@@ -138,7 +150,10 @@ export class Conductor {
     let p = this.loaded.get(i);
     if (!p) {
       p = this.host.loadTrack(t).then((track) => this.keylocked(t, track));
-      p.catch((e) => this.host.onEvent?.({ type: "error", message: `Couldn't load ${t.title}: ${e instanceof Error ? e.message : e}` }));
+      p.catch((e) => {
+        this.failed.add(t);
+        this.host.onEvent?.({ type: "error", message: `Couldn't load ${t.title}: ${e instanceof Error ? e.message : e}. Skipping it.` });
+      });
       this.loaded.set(i, p);
     }
     return p;
@@ -154,7 +169,8 @@ export class Conductor {
     const semis = keylockSemitones(t.rate, t.keyShift ?? 0);
     if (!this.keylock || Math.abs(semis) < 0.01) return track;
     const g = { beat: track.analysis.beat, downbeat0: track.analysis.downbeat0 };
-    const from = posOfBar(g, Math.max(0, t.inBar - 2)) - 1;
+    const first = Math.min(t.inBar, t.trans.loopFrom ?? t.inBar);
+    const from = posOfBar(g, Math.max(0, first - 2)) - 1;
     const to = posOfBar(g, t.outBar + 24);
     try {
       return { ...track, buffer: await shiftPitch(track.buffer, semis, { from, to }) };
@@ -203,6 +219,26 @@ export class Conductor {
       if (!this.ending && live.timeOfBar(cur.outBar) - now < LOOKAHEAD) this.finish(live, cur);
       return;
     }
+    // The next track couldn't be loaded: drop it and come into the one after
+    // with an echo-out on the next phrase (any planned move assumed the dropped track).
+    if (this.failed.has(next)) {
+      plan.tracks.splice(this.index + 1, 1);
+      this.loaded.delete(this.index + 1);
+      for (const [k, v] of [...this.loaded.entries()].sort((a, b) => a[0] - b[0])) {
+        if (k > this.index + 1) {
+          this.loaded.delete(k);
+          this.loaded.set(k - 1, v);
+        }
+      }
+      const after = plan.tracks[this.index + 1];
+      if (after) {
+        const b = Math.ceil((live.bar() + 4) / 4) * 4;
+        cur.outBar = b + 1;
+        after.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null, loopFrom: null, loopBars: null };
+        void this.prepare(this.index + 1).catch(() => {});
+      }
+      return;
+    }
     const tFrom = live.timeOfBar(next.trans.fromBar);
     if (tFrom - now > LOOKAHEAD) return;
     const ready = this.loaded.get(this.index + 1);
@@ -214,7 +250,12 @@ export class Conductor {
     if (tFrom - now < 0.25) {
       for (const k of ["fromBar", "enterAt"] as const) next.trans[k] += 8;
       if (next.trans.swapAt !== null) next.trans.swapAt += 8;
+      if (next.trans.voxOut != null) next.trans.voxOut += 8;
       cur.outBar += 8;
+      // About to run out of track while waiting: hold the current phrase in
+      // a 4-bar loop on the grid (as a DJ would) instead of playing into silence.
+      const bars = live.track.analysis.bars;
+      if (cur.outBar + 8 >= bars && !live.loop) live.setLoop(16);
       this.host.onEvent?.({ type: "postponed", index: this.index + 1 });
     }
   }
@@ -253,10 +294,56 @@ export class Conductor {
       const beat = out.grid!.beat / out.rate;
       fire(this.fx, sched.exitFx.id, { deck: out, at: sched.exitFx.at, beats: (sched.exitFx.until - sched.exitFx.at) / beat });
     }
-    inn.play(sched.startIn, posOfBar(inn.grid!, next.inBar));
+    const g = inn.grid!;
+    const stemMove = ["acapella_build", "bootleg"].includes(trans.kind);
+    if (stemMove && trans.loopFrom != null && trans.loopBars && trans.swapAt != null) {
+      // Hook loop: the incoming's sung hook repeats, phrase-locked to the
+      // outgoing, until the swap; then the deck jumps to its drop (slip-mode
+      // override, so the grid never moves). Native buffer looping is
+      // sample-accurate, so the loop can't drift against the other deck.
+      const a = posOfBar(g, trans.loopFrom);
+      const len = posOfBar(g, trans.loopFrom + trans.loopBars) - a;
+      const t0 = sched.startIn;
+      const drop = posOfBar(g, next.inBar + (trans.swapAt - trans.enterAt));
+      inn.play(t0, a);
+      inn.override(
+        t0,
+        sched.handoverAt,
+        (start) => {
+          const s = inn.source(inn.track!.buffer);
+          s.loop = true;
+          s.loopStart = a;
+          s.loopEnd = a + len;
+          s.start(start, a);
+          return [s];
+        },
+        { after: { pos: drop }, posFn: (t) => a + (((t - t0) * inn.rate) % len) },
+      );
+    } else {
+      inn.play(sched.startIn, posOfBar(g, next.inBar));
+    }
+    if (stemMove || trans.kind === "mashup") this.buildInto(out, sched.handoverAt);
     out.stop(sched.outEndsAt + 0.05);
     this.pending = { out, inn, index, sched, handedOver: false };
+    // Start preparing the track after this one now, not when this transition
+    // ends: decoding, stems and the keylock render can take 10-35 s, and a
+    // long mashup can end seconds before the next move is due.
+    void this.prepare(index + 1).catch(() => {});
     this.host.onEvent?.({ type: "transition", index, deck: inn.id, kind: trans.kind, rate });
+  }
+
+  /**
+   * A proper build into a stem move's swap: a riser over the last bars, the
+   * outgoing high-passed away, and an impact on the one. Same layering as the
+   * FX director's builds into drops.
+   */
+  private buildInto(out: Deck, swap: number): void {
+    const barSec = (4 * out.grid!.beat) / out.rate;
+    const now = this.engine.ctx.currentTime;
+    const bars = swap - now > 8 * barSec + 0.05 ? 8 : swap - now > 4 * barSec + 0.05 ? 4 : 0;
+    if (bars) fire(this.fx, `riser:${bars}`, { deck: out, at: swap - bars * barSec, beats: bars * 4 });
+    if (swap - now > 2 * barSec + 0.05) fire(this.fx, "hp_sweep:2", { deck: out, at: swap - 2 * barSec, beats: 8 });
+    fire(this.fx, "impact:boom", { deck: out, at: swap, beats: 2 });
   }
 
   private finish(deck: Deck, cur: SetTrack): void {

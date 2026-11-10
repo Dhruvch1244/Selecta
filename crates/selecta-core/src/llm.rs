@@ -136,7 +136,7 @@ pub fn refine_intent(cfg: &AiConfig, it: &mut Intent) -> Result<(), String> {
     let prompt = format!(
         "You are a DJ's assistant. Turn this request into JSON for planning a DJ set.\n\
          Allowed genre ids: {}.\n\
-         Return ONLY JSON: {{\"genres\": {{\"<id>\": 0..1}}, \"energy\": \"chill|normal|party|crazy\", \"title\": \"short catchy set name\", \"vibe\": \"one sentence\"}}\n\
+         Return ONLY JSON: {{\"genres\": {{\"<id>\": 0..1}}, \"energy\": \"chill|normal|party|crazy\", \"title\": \"short catchy set name\", \"vibe\": \"one sentence\", \"rapid\": true if they want quick mixing (tunes cut short, drop to drop), \"mashups\": 0..1 how much they want vocals over other beats (mashups, bootlegs, acapellas), \"chaos\": 0..1 how wild the transitions and effects should be}}\n\
          Request: {}",
         ids.join(", "),
         it.prompt
@@ -168,6 +168,18 @@ pub fn refine_intent(cfg: &AiConfig, it: &mut Intent) -> Result<(), String> {
     }
     if let Some(vibe) = v["vibe"].as_str() {
         it.vibe = Some(vibe.chars().take(200).collect());
+    }
+    // Style knobs only *raise* what the rules read: an explicit "hedex style"
+    // or "mashups" in the prompt already set them, and the AI never tones
+    // down what was asked for.
+    if v["rapid"].as_bool() == Some(true) {
+        it.rapid = true;
+    }
+    if let Some(m) = v["mashups"].as_f64() {
+        it.mashups = it.mashups.max(m.clamp(0.0, 1.0));
+    }
+    if let Some(c) = v["chaos"].as_f64() {
+        it.chaos = it.chaos.max(c.clamp(0.0, 1.0));
     }
     Ok(())
 }

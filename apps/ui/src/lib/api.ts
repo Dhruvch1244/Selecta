@@ -14,6 +14,16 @@ export interface Settings {
   keylock: boolean;
 }
 
+/** Set-builder options; style switches override what the prompt implies. */
+export interface PlanOptions {
+  durationMin?: number;
+  chaos?: number;
+  rapid?: boolean;
+  mashups?: boolean;
+  smooth?: boolean;
+  turntablism?: boolean;
+}
+
 export const inTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -28,7 +38,7 @@ export const api = {
   scan: () => call<ScanReport>("library_scan"),
   analysis: (id: string) => call<Analysis>("track_analysis", { id }),
   progress: () => call<GroupProgress[]>("jobs_progress"),
-  planSet: (prompt: string, options: { durationMin?: number; chaos?: number; seed?: number }) => call<SetPlan>("plan_set", { prompt, options }),
+  planSet: (prompt: string, options: PlanOptions & { seed?: number }) => call<SetPlan>("plan_set", { prompt, options }),
   planSplice: (intent: Intent, from: SetTrack, rest: string[]) => call<SetTrack[]>("plan_splice", { intent, from, rest }),
   sets: () => call<SetSummary[]>("sets_list"),
   set: (id: string) => call<SetPlan>("set_get", { id }),

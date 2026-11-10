@@ -184,6 +184,33 @@ export async function selfTest(onResult?: (r: SelfTestResult) => void): Promise<
   };
   const [both, noVox, noInst] = [await stem(), await stem("vox"), await stem("inst")];
   const stemOk = Math.abs(both - 0.75) < 0.02 && Math.abs(noVox - 0.5) < 0.02 && Math.abs(noInst - 0.25) < 0.02;
+  // Loops: a track whose level ramps up over time, looped for 1 beat (0.5 s):
+  // the output must repeat exactly, beat after beat, and stay at the level of
+  // the looped beat instead of carrying on up the ramp.
+  {
+    const secs = 6;
+    const ctx = new OfflineAudioContext(2, secs * SR, SR);
+    const b = ctx.createBuffer(2, secs * SR, SR);
+    for (let c = 0; c < 2; c++) {
+      const d = b.getChannelData(c);
+      for (let i = 0; i < d.length; i++) d[i] = (0.05 + (0.9 * i) / d.length) * Math.sin((2 * Math.PI * 440 * i) / SR);
+    }
+    const deck = new Deck(ctx, "A", ctx.destination);
+    deck.load({ id: "l", artist: "", title: "", buffer: b, analysis: fakeAnalysis(secs) });
+    deck.play(0, 1); // from 1 s in
+    const looped = deck.setLoop(1); // next beat: t = 0.5 s, track pos 1.5 s
+    const out = await ctx.startRendering();
+    const d = out.getChannelData(0);
+    const env = (t0: number) => {
+      let m = 0;
+      for (let i = Math.round(t0 * SR); i < Math.round((t0 + 0.45) * SR); i++) m = Math.max(m, Math.abs(d[i] ?? 0));
+      return m;
+    };
+    const first = env(0.52);
+    const later = env(4.52); // 8 loops later; without the loop the ramp would be ~65% higher here
+    const ratio = later / Math.max(first, 1e-9);
+    add("loop repeats the beat (level 8 beats later / first)", ratio, looped && Math.abs(ratio - 1) < 0.02, "1.00 ± 0.02");
+  }
   add("stem kills: both / vox off / inst off (amplitude)", both, stemOk, `0.75 / 0.50 / 0.25, got ${both.toFixed(2)} / ${noVox.toFixed(2)} / ${noInst.toFixed(2)}`);
   return r;
 }
