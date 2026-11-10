@@ -539,6 +539,15 @@ fn finish(tracks: &mut [SetTrack], seq: &[&Work], intent: &Intent, rng: &mut Rng
         let until = tracks.get(i + 1).map(|n| n.trans.from_bar).unwrap_or(tracks[i].out_bar);
         let genre = tracks[i].genre.clone();
         tracks[i].fx = crate::fx::direct(seq[i].a(), genre.as_deref(), tracks[i].in_bar, until, intent.chaos, rng);
+        // Cuts get a build on the outgoing: nothing else may sit in it.
+        if let Some(n) = tracks.get(i + 1).filter(|n| !n.trans.kind.beatmatched() && n.trans.kind != TransitionKind::Start) {
+            let build = crate::fx::cut_build(n.trans.from_bar, intent.chaos, intent.rapid);
+            let start = build.iter().map(|c| c.bar).fold(f64::MAX, f64::min);
+            if start >= tracks[i].in_bar as f64 + 2.0 {
+                tracks[i].fx.retain(|c| c.bar + c.beats / 4.0 <= start);
+                tracks[i].fx.extend(build);
+            }
+        }
         tracks[i].energy = (seq[i].energy * 1000.0).round() / 1000.0;
     }
     let mut total = 0.0;
@@ -1213,15 +1222,32 @@ fn script(
                 loop_bars: None,
             };
         } else if !kind.beatmatched() {
-            st.in_bar = choose_in(w, true, intent, rng);
-            let ob = choose_out(p, prev_in, prev_rate, 0);
-            out[i - 1].out_bar = ob;
             // Bars the outgoing's exit move takes before the incoming lands.
             let pre = match kind {
                 TransitionKind::EchoOut | TransitionKind::Backspin | TransitionKind::TapeStop | TransitionKind::Rewind => 1,
                 TransitionKind::LoopRoll => 2,
                 _ => 0,
             };
+            // A cut is a drop swap: the outgoing plays its build (with a
+            // filter sweep and riser on top, see `finish`) and, right where
+            // its drop would hit, the incoming's drop hits instead. Cutting
+            // into an intro at a random phrase sounded like a skipped track.
+            let target = |d: u32| ((d - prev_in) as f64 * p.bar_sec(prev_rate) - p.est_play).abs();
+            let in_drop = landings(a, 8).first().copied();
+            let out_drop = pa
+                .drops
+                .iter()
+                .cloned()
+                .filter(|d| *d >= prev_in + 16 + pre && *d + 1 < pa.bars)
+                .min_by(|x, y| target(*x).total_cmp(&target(*y)));
+            let (ib, ob) = match (in_drop, out_drop) {
+                (Some(id), Some(od)) => (id, od),
+                // No drop to swap on the outgoing: still land on the incoming's drop/hook.
+                (Some(id), None) => (id, choose_out(p, prev_in, prev_rate, 0)),
+                _ => (choose_in(w, true, intent, rng), choose_out(p, prev_in, prev_rate, 0)),
+            };
+            st.in_bar = ib;
+            out[i - 1].out_bar = ob;
             st.trans = Transition {
                 kind,
                 from_bar: ob - pre,
@@ -1592,7 +1618,7 @@ mod tests {
             for l in &t.layers {
                 assert_ne!(l.id, t.id, "a track never layers over itself");
                 assert!(l.from_bar >= lo && l.to_bar <= hi, "layer {}-{} outside solo bars {lo}-{hi} of {}", l.from_bar, l.to_bar, t.title);
-                assert!(l.to_bar > l.from_bar && l.src_bars == 4);
+                assert!(l.to_bar > l.from_bar && l.src_bars == if l.part == crate::layers::LayerPart::Riff { 8 } else { 4 });
                 uses.entry(l.id.as_str()).or_default().push(i);
             }
         }
@@ -1627,6 +1653,34 @@ mod tests {
             p.tracks.iter().flat_map(|t| t.layers.iter().map(move |l| (t.title.as_str(), l))).filter(|(_, l)| l.title == "Solar").collect();
         assert!(!tool.is_empty(), "the requested tool loop should be layered: {:?}", p.notes);
         assert!(tool.iter().all(|(_, l)| l.part == crate::layers::LayerPart::Riff));
+    }
+
+    #[test]
+    fn cuts_are_drop_swaps_with_a_build() {
+        let lib = library();
+        let mut it = intent::parse("hedex style rapid fire dnb 20 min", &[]);
+        it.rapid = true;
+        let mut cuts = 0;
+        for seed in 0..6 {
+            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: true }).unwrap();
+            for i in 1..p.tracks.len() {
+                let (prev, t) = (&p.tracks[i - 1], &p.tracks[i]);
+                if t.trans.kind.beatmatched() {
+                    continue;
+                }
+                cuts += 1;
+                let a = &lib.iter().find(|c| c.track.id == t.id).unwrap().analysis;
+                if let Some(d) = landings(a, 8).first() {
+                    assert_eq!(t.in_bar, *d, "{} should come in on its drop", t.title);
+                }
+                let build: Vec<_> = prev.fx.iter().filter(|c| c.reason == "Build into the switch").collect();
+                assert!(!build.is_empty(), "no build before the cut into {}", t.title);
+                for c in build {
+                    assert!((c.bar + c.beats / 4.0 - t.trans.from_bar as f64).abs() < 1e-9, "build must end on the cut");
+                }
+            }
+        }
+        assert!(cuts > 0, "rapid sets should contain cuts");
     }
 
     #[test]

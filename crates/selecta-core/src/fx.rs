@@ -212,6 +212,21 @@ fn flavour_for(genre: Option<&str>) -> &'static [(&'static str, f64)] {
 
 /// Place cues over the played region [in_bar, out_bar) of one track.
 /// `busy_until`: bar where the outgoing transition starts (kept clean).
+/// The build into a cut: a riser and the outgoing high-passed away, both
+/// ending exactly at `cut_at` (the bar the outgoing's exit move starts), so
+/// the next track's drop lands on a build instead of out of nowhere.
+pub fn cut_build(cut_at: u32, chaos: f64, rapid: bool) -> Vec<FxCue> {
+    let long = chaos > 0.55 && !rapid;
+    let (riser, sweep) = if long { ("riser:8", "hp_sweep:4") } else { ("riser:4", "hp_sweep:2") };
+    let reason = "Build into the switch".to_string();
+    [riser, sweep]
+        .iter()
+        .filter_map(|id| {
+            def(id).map(|d| FxCue { bar: cut_at as f64 - d.beats / 4.0, fx: (*id).into(), beats: d.beats, reason: reason.clone() })
+        })
+        .collect()
+}
+
 pub fn direct(a: &Analysis, genre: Option<&str>, in_bar: u32, transition_from: u32, chaos: f64, rng: &mut Rng) -> Vec<FxCue> {
     let mut cues: Vec<FxCue> = vec![];
     let lo = in_bar as f64 + 4.0; // let the track land first
