@@ -45,6 +45,12 @@ pub struct Intent {
     /// 0..1 appetite for stem moves (acapella builds, bootlegs, mashups).
     #[serde(default)]
     pub mashups: f64,
+    /// Long, seamless blends; cuts and turntable tricks kept to a minimum.
+    #[serde(default)]
+    pub smooth: bool,
+    /// Turntable tricks wanted: rewinds, backspins, brakes, loop rolls.
+    #[serde(default)]
+    pub turntablism: bool,
 }
 
 const SYNONYMS: &[(&str, &[&str])] = &[
@@ -285,6 +291,8 @@ pub fn parse(prompt: &str, library_artists: &[String]) -> Intent {
         vibe: None,
         rapid,
         mashups,
+        smooth: any(&["smooth", "seamless", "long blends", "no cuts"]),
+        turntablism: any(&["scratch", "scratchy", "turntablism", "rewinds", "pull ups", "pull up", "backspins"]),
     };
     // A style reference ("hedex style") with none of that artist's tracks
     // in the library is about how to mix, not whose tunes to play.

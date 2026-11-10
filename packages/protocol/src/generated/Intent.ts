@@ -30,4 +30,12 @@ rapid: boolean,
 /**
  * 0..1 appetite for stem moves (acapella builds, bootlegs, mashups).
  */
-mashups: number, };
+mashups: number, 
+/**
+ * Long, seamless blends; cuts and turntable tricks kept to a minimum.
+ */
+smooth: boolean, 
+/**
+ * Turntable tricks wanted: rewinds, backspins, brakes, loop rolls.
+ */
+turntablism: boolean, };

@@ -22,7 +22,7 @@ use crate::genres::{self, Profile};
 use crate::intent::{Energy, Intent};
 use crate::library::TrackSummary;
 
-#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum TransitionKind {
@@ -106,6 +106,14 @@ pub struct Transition {
     /// vocals never clash (stem tracks only).
     #[serde(default)]
     pub vox_out: Option<u32>,
+    /// Stem moves: incoming-track bar of a sung hook that loops (phrase-locked
+    /// to the outgoing) from `enter_at` until the swap, instead of playing the
+    /// incoming's pre-drop bars straight through.
+    #[serde(default)]
+    pub loop_from: Option<u32>,
+    /// Length of that hook loop in incoming bars (4 or 8).
+    #[serde(default)]
+    pub loop_bars: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -268,6 +276,80 @@ pub fn fold_ratio(src_bpm: f64, dst_bpm: f64) -> f64 {
 
 fn tempo_score(a: f64, b: f64) -> f64 {
     (1.0 - (fold_ratio(a, b) - 1.0).abs() / 0.1).max(0.0)
+}
+
+/// Largest tempo change a beatmatched move may use. With keylock the
+/// stretcher keeps the key, so a wider window still sounds natural.
+fn match_window(keylock: bool) -> f64 {
+    if keylock {
+        0.10
+    } else {
+        0.06
+    }
+}
+
+/// Identity of a *song*, not a file: the same song often exists twice (an
+/// .opus rip and an .m4a, "(Official Video)" vs "[Lyric Video]", a YouTube
+/// title "'RED CUP' | PENTHOUSE TAPES | SEEDHE MAUT" vs the tagged "RED CUP").
+/// Returns (title core, artist names). Unicode-aware, so Devanagari titles
+/// don't collapse to nothing.
+pub fn song_key(artist: &str, title: &str) -> Option<(String, Vec<String>)> {
+    let mut t = String::new();
+    let mut depth = 0;
+    for c in title.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = (depth - 1).max(0),
+            _ if depth == 0 => t.push(c),
+            _ => {}
+        }
+    }
+    let clean = |s: &str| -> String {
+        s.chars()
+            .flat_map(char::to_lowercase)
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // The song is the first segment: after " - ", "|" or "｜" come the uploader's extras.
+    let first = t.split(" - ").next().unwrap_or(&t).split(['|', '｜']).next().unwrap_or(&t);
+    let mut core = clean(first);
+    for junk in ["official music video", "official video", "lyric video", "official audio", "lyrics", "audio", "video", "hd", "4k"] {
+        if core.ends_with(junk) {
+            core = core[..core.len() - junk.len()].trim().to_string();
+        }
+    }
+    let artists: Vec<String> = artist.split([',', '&', '/']).map(clean).filter(|a| !a.is_empty()).collect();
+    (core.chars().count() >= 2).then_some((core, artists))
+}
+
+/// One candidate per song: same title core and at least one shared artist
+/// (two different songs called "Intro" stay apart). Keeps the copy with a
+/// vocal stem, else the first.
+fn dedupe(library: &[Candidate]) -> Vec<&Candidate> {
+    let mut seen: HashMap<String, Vec<(Vec<String>, usize)>> = HashMap::new();
+    let mut out: Vec<&Candidate> = vec![];
+    for c in library {
+        let Some((core, artists)) = song_key(&c.track.artist, &c.track.title) else {
+            out.push(c);
+            continue;
+        };
+        let group = seen.entry(core).or_default();
+        match group.iter().find(|(a, _)| a.iter().any(|x| artists.contains(x))) {
+            Some(&(_, i)) => {
+                if c.vocals.is_some() && out[i].vocals.is_none() {
+                    out[i] = c;
+                }
+            }
+            None => {
+                group.push((artists, out.len()));
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 // ---------- planner ----------
@@ -471,8 +553,12 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     let mut notes = vec![];
 
     // 1. Select.
+    let unique = dedupe(library);
+    if unique.len() < library.len() {
+        notes.push(format!("{} duplicate files of the same songs were set aside.", library.len() - unique.len()));
+    }
     let mut scored: Vec<(&Candidate, f64)> =
-        library.iter().filter(|c| !opts.exclude.contains(&c.track.id)).map(|c| (c, fit(c, intent))).collect();
+        unique.into_iter().filter(|c| !opts.exclude.contains(&c.track.id)).map(|c| (c, fit(c, intent))).collect();
     if scored.is_empty() {
         return Err("No analysed tracks yet: add a music folder and let analysis finish.".into());
     }
@@ -538,7 +624,10 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
             let (ks, key) = best_key_shift(&pw.a().camelot, &w.a().camelot, opts.keylock);
             let key = key - 0.08 * ks.abs() as f64;
             s += 0.7 * key * if pw.genre.is_some_and(|g| g.beatmatch) { 1.0 } else { 0.6 };
-            s += if bm { 0.9 } else { 0.3 } * tempo_score(pw.a().bpm, w.a().bpm);
+            // Tempo flow matters in every genre: neighbours within the match
+            // window can be mixed instead of cut. (Was 0.3 for cut genres,
+            // which ordered a hip-hop set 122 -> 90 -> 133 -> 155 BPM.)
+            s += if bm { 1.1 } else { 0.9 } * tempo_score(pw.a().bpm, w.a().bpm);
             let recent: Vec<String> = seq.iter().rev().take(3).map(|i| work[*i].c.track.artist.to_lowercase()).collect();
             let me = w.c.track.artist.to_lowercase();
             if recent.first() == Some(&me) {
@@ -666,6 +755,29 @@ fn vox(c: &Candidate, lo: u32, hi: u32) -> f64 {
     v[lo..hi].iter().map(|x| *x as f64).sum::<f64>() / (hi - lo) as f64
 }
 
+/// The track's strongest sung hook: a phrase-aligned 8-bar window (else 4)
+/// past the intro, where the vocal is present almost throughout. Loops of
+/// it ride another track in sync, the way a DJ loops an acapella.
+fn vocal_hook(c: &Candidate) -> Option<(u32, u32)> {
+    let a = &c.analysis;
+    c.vocals.as_ref()?;
+    for len in [8u32, 4] {
+        let best = (a.start_bar + 8..a.bars.saturating_sub(len + 4))
+            .step_by(4)
+            .map(|s| {
+                // Every bar of the loop should be sung: the weakest bar counts most.
+                let min = (s..s + len).map(|b| vox(c, b, b + 1)).fold(1.0, f64::min);
+                (s, 0.6 * min + 0.4 * vox(c, s, s + len))
+            })
+            .max_by(|x, y| x.1.total_cmp(&y.1));
+        if let Some((s, score)) = best.filter(|b| b.1 >= 0.5) {
+            let _ = score;
+            return Some((s, len));
+        }
+    }
+    None
+}
+
 /// Where a track can "land": its drops and rising sections, at least `lead` bars in.
 fn landings(a: &Analysis, lead: u32) -> Vec<u32> {
     let mut v: Vec<u32> = a
@@ -701,6 +813,20 @@ fn place_stem_move(
         swap_at: Some(swap_at),
         echo_div: Some(0.125),
         vox_out,
+        loop_from: None,
+        loop_bars: None,
+    };
+    // Acapella builds and bootlegs loop the incoming's hook when it has a
+    // clear one (one vocal, in sync, repeating), rather than whatever happens
+    // to be sung in the bars before its drop.
+    let hooked = |mut tr: Transition| {
+        if let Some((from, len)) = vocal_hook(w.c) {
+            if tr.len >= len {
+                tr.loop_from = Some(from);
+                tr.loop_bars = Some(len);
+            }
+        }
+        tr
     };
     match kind {
         TransitionKind::AcapellaBuild => {
@@ -713,7 +839,7 @@ fn place_stem_move(
                 }
                 let from = ob - lead;
                 let mute = (vox(p.c, from, ob) > 0.12).then_some(from);
-                return Some((land - lead, ob, t(from, lead, from, ob, mute)));
+                return Some((land - lead, ob, hooked(t(from, lead, from, ob, mute))));
             }
             None
         }
@@ -726,7 +852,7 @@ fn place_stem_move(
                 .cloned()
                 .filter(|d| *d >= prev_in + 8 && d + lead + 1 < pa.bars)
                 .min_by(|x, y| near(x).total_cmp(&near(y)))?;
-            Some((land - lead, od + lead, t(od, lead, od, od + lead, Some(od))))
+            Some((land - lead, od + lead, hooked(t(od, lead, od, od + lead, Some(od)))))
         }
         TransitionKind::Mashup => {
             // Double drop where the incoming sings over the outgoing's beat.
@@ -744,15 +870,14 @@ fn place_stem_move(
     }
 }
 
-fn pick_transition(
-    p: &Work,
-    t: &Work,
-    compat: bool,
-    stem_ok: bool,
+/// What the set has done so far, for variety.
+struct History {
+    used: HashMap<TransitionKind, u32>,
     prev: Option<TransitionKind>,
-    it: &Intent,
-    rng: &mut Rng,
-) -> TransitionKind {
+}
+
+fn pick_transition(p: &Work, t: &Work, compat: bool, stem_ok: bool, hist: &History, it: &Intent, rng: &mut Rng) -> TransitionKind {
+    let (used, prev) = (&hist.used, hist.prev);
     let chaos = it.chaos;
     let prof = p.genre.or(t.genre);
     let mut weights: Vec<(TransitionKind, f64)> = prof
@@ -760,6 +885,20 @@ fn pick_transition(
         .unwrap_or_else(|| {
             vec![(TransitionKind::EchoOut, 2.0), (TransitionKind::Filter, 2.0), (TransitionKind::Slam, 1.0), (TransitionKind::Blend, 1.0)]
         });
+    if compat {
+        // Cut genres' tables have no blends; when the tempos line up, a real
+        // DJ blends anyway: give them the beatmatched moves.
+        for (k, w) in [
+            (TransitionKind::BassSwap, 3.0),
+            (TransitionKind::Blend, 1.5),
+            (TransitionKind::DoubleDrop, 1.5),
+            (TransitionKind::Filter, 1.0),
+        ] {
+            if !weights.iter().any(|x| x.0 == k) {
+                weights.push((k, w));
+            }
+        }
+    }
     if compat && stem_ok && it.mashups > 0.0 {
         // Stem moves aren't in the genre tables: any genre can ride a vocal.
         let w = 2.5 * it.mashups;
@@ -785,8 +924,18 @@ fn pick_transition(
         ) {
             *w *= 0.4 + 1.4 * chaos;
         }
-        if compat && beat_genre && !k.beatmatched() {
-            *w *= 0.45; // beatmatch genres: blends are the bread, cuts the spice
+        if compat && !k.beatmatched() {
+            // Mixable pair: blends are the bread, cuts the spice (a little
+            // more spice in cut-first genres like hip hop).
+            *w *= if beat_genre { 0.45 } else { 0.4 };
+        }
+        if it.smooth {
+            *w *= if k.beatmatched() { 1.6 } else { 0.25 };
+        }
+        if it.turntablism
+            && matches!(k, TransitionKind::Rewind | TransitionKind::Backspin | TransitionKind::TapeStop | TransitionKind::LoopRoll)
+        {
+            *w *= 3.0;
         }
         if it.rapid {
             *w *= match k {
@@ -798,6 +947,11 @@ fn pick_transition(
         }
         if Some(*k) == prev {
             *w *= 0.35;
+        }
+        // Gimmick exits are seasoning: each use halves the next one's odds
+        // (a set with four rewinds stops being exciting by the second).
+        if matches!(k, TransitionKind::Rewind | TransitionKind::Backspin | TransitionKind::TapeStop | TransitionKind::LoopRoll) {
+            *w *= (if it.turntablism { 0.75f64 } else { 0.45 }).powi(used.get(k).copied().unwrap_or(0) as i32);
         }
     }
     if p.a().drops.is_empty() || t.a().drops.is_empty() {
@@ -833,6 +987,8 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: boo
                 swap_at: None,
                 echo_div: None,
                 vox_out: None,
+                loop_from: None,
+                loop_bars: None,
             },
             est_sec: 0.0,
             fx: vec![],
@@ -851,15 +1007,23 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: boo
         let prev_rate = out[i - 1].rate;
         let prev_in = out[i - 1].in_bar;
         let r = fold_ratio(tempo, a.bpm);
-        let either_bm = p.genre.is_some_and(|g| g.beatmatch) || w.genre.is_some_and(|g| g.beatmatch);
-        let compat = (r - 1.0).abs() <= 0.08 && a.grid_conf > 2.0 && p.a().grid_conf > 2.0 && (either_bm || (r - 1.0).abs() <= 0.04);
+        // Any genre beatmatches when the tempos allow it (a hip-hop or
+        // Bollywood DJ blends close tempos too); the genre only decides how
+        // much it prefers blends over cuts.
+        let compat = (r - 1.0).abs() <= match_window(keylock) && a.grid_conf > 2.0 && p.a().grid_conf > 2.0;
         // Vocals over another track's harmony only work in compatible keys.
         let pa_key = p.a().camelot.clone();
         // The outgoing's *heard* key: its own, plus any shift it was given.
         let prev_key = shift_camelot(&pa_key, out[i - 1].key_shift);
-        let (ks, ksc) = best_key_shift(&prev_key, &a.camelot, keylock);
+        // Only shift keys we trust: a shift computed from a shaky key estimate is a guess.
+        let confident = a.key_conf >= 0.6 && p.a().key_conf >= 0.6;
+        let (ks, ksc) = if confident { best_key_shift(&prev_key, &a.camelot, keylock) } else { (0, camelot_score(&prev_key, &a.camelot)) };
         let stem_ok = p.c.vocals.is_some() && w.c.vocals.is_some() && ksc >= 0.85;
-        let mut kind = pick_transition(p, w, compat, stem_ok, Some(out[i - 1].trans.kind), intent, rng);
+        let mut hist = History { used: HashMap::new(), prev: Some(out[i - 1].trans.kind) };
+        for t in &out {
+            *hist.used.entry(t.trans.kind).or_default() += 1;
+        }
+        let mut kind = pick_transition(p, w, compat, stem_ok, &hist, intent, rng);
         let pa = p.a();
 
         if kind.stems() {
@@ -898,6 +1062,8 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: boo
                             swap_at: Some(od),
                             echo_div: None,
                             vox_out: None,
+                            loop_from: None,
+                            loop_bars: None,
                         };
                     } else {
                         kind = TransitionKind::BassSwap;
@@ -917,6 +1083,8 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: boo
             }
             if intent.rapid {
                 ov = ov.min(16);
+            } else if intent.smooth && kind == TransitionKind::Blend {
+                ov = 32; // long, seamless
             }
             // Rapid mixing skips intros: come in on the build into the first drop.
             st.in_bar = if intent.rapid {
@@ -935,6 +1103,8 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: boo
                 swap_at: Some(from + (ob - from) / 2),
                 echo_div: None,
                 vox_out: None,
+                loop_from: None,
+                loop_bars: None,
             };
         } else if !kind.beatmatched() {
             st.in_bar = choose_in(w, true, intent, rng);
@@ -954,20 +1124,29 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: boo
                 swap_at: None,
                 echo_div: (kind == TransitionKind::EchoOut).then(|| [0.25, 0.5, 0.1875][(rng.next_f64() * 3.0) as usize % 3]),
                 vox_out: None,
+                loop_from: None,
+                loop_bars: None,
             };
         }
-        // Vocal clash guard: when both tracks sing during a blend, the
-        // outgoing's vocal goes at the swap (the new track tells the story).
+        // Vocal clash guard: one singer at a time. The outgoing's vocal goes
+        // on the 4-bar phrase where the incoming first sings, if the outgoing
+        // is still singing then (it used to wait for the swap, and only when
+        // both sang heavily, so two vocals could overlap for 8+ bars).
         if matches!(kind, TransitionKind::Blend | TransitionKind::BassSwap | TransitionKind::DoubleDrop | TransitionKind::Filter) {
             let t = &st.trans;
-            if vox(p.c, t.from_bar, t.from_bar + t.len) > 0.25 && vox(w.c, st.in_bar, st.in_bar + t.len) > 0.25 {
-                st.trans.vox_out = t.swap_at.or(Some(t.enter_at));
+            let first_sung = (0..t.len).find(|k| vox(w.c, st.in_bar + k, st.in_bar + k + 1) >= 0.3);
+            if let Some(k) = first_sung {
+                let at = t.enter_at + k - k % 4;
+                if vox(p.c, at, t.from_bar + t.len) > 0.12 {
+                    st.trans.vox_out = Some(at);
+                }
             }
         }
         st.rate = if kind.beatmatched() { (r * 1e5).round() / 1e5 } else { 1.0 };
         // Keylock: shift the key when that's what makes this pair harmonic.
         // Cuts don't need it (no overlap), so only overlapping moves shift.
-        st.key_shift = if kind.beatmatched() { ks } else { 0 };
+        // +-1 for blends; +-2 only where a vocal must sit in key over another track.
+        st.key_shift = if kind.beatmatched() && (ks.abs() <= 1 || kind.stems()) { ks } else { 0 };
         tempo = a.bpm * st.rate;
         out.push(st);
     }
@@ -1210,6 +1389,26 @@ mod tests {
             assert!(off.tracks.iter().all(|t| t.key_shift == 0));
         }
         assert!(shifted > 0, "clashing keys should have been shifted at least once");
+    }
+
+    #[test]
+    fn one_song_two_files_is_one_song() {
+        let k = |a: &str, t: &str| song_key(a, t).map(|(core, _)| core);
+        // Real duplicates from a library: a YouTube rip and the tagged file.
+        assert_eq!(
+            k("DL91 Era", "'RED CUP' ｜ PENTHOUSE TAPES VOL. 1 ｜ SEEDHE MAUT (Prod. CALM) - LYRIC VIDEO"),
+            k("Calm, DL91 Era, Seedhe Maut", "RED CUP")
+        );
+        assert_eq!(k("Karan Aujla", "Mexico (Official Video)"), k("Karan Aujla", "Mexico"));
+        assert_eq!(k("Seedhe Maut", "नalla Freestyle").unwrap(), "नalla freestyle", "Devanagari survives");
+        assert_eq!(k("X", "(Intro)"), None, "nothing left: no identity, never merged");
+        // Same title, no shared artist: two different songs.
+        let mut lib = library();
+        lib.truncate(3);
+        lib[1].track.title = lib[0].track.title.clone();
+        assert_eq!(dedupe(&lib).len(), 3);
+        lib[1].track.artist = format!("{}, Someone", lib[0].track.artist);
+        assert_eq!(dedupe(&lib).len(), 2, "shared artist + same title = duplicate");
     }
 
     #[test]

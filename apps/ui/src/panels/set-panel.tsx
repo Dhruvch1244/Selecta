@@ -21,6 +21,14 @@ const CHIPS: [string, string][] = [
   ["Bollywood mashups", "bollywood mashups and bootlegs for friends"],
 ];
 
+type StyleKey = "rapid" | "mashups" | "smooth" | "turntablism";
+const STYLES: [StyleKey, string, string][] = [
+  ["rapid", "Rapid fire", "Quick mixing: ~40 bars a tune, drop to drop, stacked double drops"],
+  ["mashups", "Mashups", "Vocals over other beats: looped hooks, bootlegs, acapella builds"],
+  ["smooth", "Smooth", "Long seamless blends, hardly any cuts"],
+  ["turntablism", "Scratchy", "Rewinds, backspins, brakes and loop rolls"],
+];
+
 const KIND_LABEL: Record<string, string> = {
   start: "",
   blend: "BLEND",
@@ -59,7 +67,13 @@ export function SetPanel() {
     void refreshRecent();
   }, [refreshRecent]);
 
-  const opts = () => ({ ...(minutes > 0 ? { durationMin: Math.round(minutes) } : {}), ...(chaos >= 0 ? { chaos } : {}) });
+  const [style, setStyle] = React.useState<Record<StyleKey, boolean>>({ rapid: false, mashups: false, smooth: false, turntablism: false });
+  // Only switched-on styles are sent: off means "let the prompt decide".
+  const opts = () => ({
+    ...(minutes > 0 ? { durationMin: Math.round(minutes) } : {}),
+    ...(chaos >= 0 ? { chaos } : {}),
+    ...Object.fromEntries(Object.entries(style).filter(([, on]) => on)),
+  });
   const submit = (reroll = false) => void build(prompt || plan?.prompt || "", opts(), reroll);
 
   return (
@@ -106,6 +120,24 @@ export function SetPanel() {
         </form>
         <Knob caption="Length" size="sm" label="Set length" min={0} max={120} defaultValue={0} value={minutes} onChange={setMinutes} format={(v) => (v < 2.5 ? "auto (from prompt)" : `${Math.round(v)} min`)} />
         <Knob caption="Chaos" size="sm" label="Chaos" min={-0.05} max={1} defaultValue={-0.05} value={chaos} onChange={setChaos} format={(v) => (v < 0 ? "auto (from prompt)" : `${Math.round(v * 100)}%: ${v > 0.7 ? "slams and double drops" : v > 0.35 ? "mixed" : "smooth blends"}`)} />
+      </div>
+      <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Set style">
+        <span className="font-display text-[10px] uppercase tracking-wider text-[var(--ink-faint)]">Style</span>
+        {STYLES.map(([key, label, hint]) => (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={style[key]}
+            onClick={() => setStyle((s) => ({ ...s, [key]: !s[key], ...(key === "smooth" && !s.smooth ? { rapid: false, turntablism: false } : {}), ...((key === "rapid" || key === "turntablism") && !s[key] ? { smooth: false } : {}) }))}
+            className={cn(
+              "rounded-sm border px-2 py-0.5 font-display text-[11px] uppercase tracking-wider",
+              style[key] ? "border-accent bg-accent text-accent-foreground" : "border-border bg-secondary text-muted-foreground hover:text-foreground",
+            )}
+            {...hintProps({ label, value: `${hint}${style[key] ? " · on" : " · off: the prompt decides"}` })}
+          >
+            {label}
+          </button>
+        ))}
       </div>
       <div className="flex flex-wrap gap-1">
         {CHIPS.map(([label, p]) => (

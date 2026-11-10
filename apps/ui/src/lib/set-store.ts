@@ -6,7 +6,7 @@ import { Conductor, type ConductorEvent, type DeckId } from "@selecta/engine";
 import type { SetPlan, SetSummary } from "@selecta/protocol";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { api } from "./api";
+import { api, type PlanOptions } from "./api";
 import { loadTrackAudio } from "./track-audio";
 import { getEngine, useApp } from "./store";
 
@@ -22,7 +22,7 @@ interface SetState {
   leadDeck: DeckId | null;
   recent: SetSummary[];
   error: string | null;
-  build: (prompt: string, opts: { durationMin?: number; chaos?: number }, reroll?: boolean) => Promise<void>;
+  build: (prompt: string, opts: PlanOptions, reroll?: boolean) => Promise<void>;
   open: (id: string) => Promise<void>;
   refreshRecent: () => Promise<void>;
   play: () => Promise<void>;

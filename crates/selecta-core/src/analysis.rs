@@ -31,7 +31,7 @@ const BINS: usize = NFFT / 2 + 1;
 const ONSET_LAG: f64 = 0.039;
 /// Bump when analysis output changes; stored tracks with an older version are re-analysed.
 /// 2: peak-aware gain (`peak_db`), soft genre tempo prior.
-pub const ANALYSIS_VERSION: u32 = 2;
+pub const ANALYSIS_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -234,6 +234,73 @@ fn grid_search(onset: &[f64], lo: f64, hi: f64, step: f64, phase_step: f64, fps:
         .reduce(|| (f64::MIN, lo, 0.0), |a, b| if b.0 > a.0 { b } else { a })
 }
 
+/// Below this the low band has no clear kick pattern to pin a grid to.
+pub const KICK_SHARPNESS: f64 = 1.6;
+
+/// Offset (s) that best aligns a grid (`beat`, first beat `phase`) with the
+/// track's kicks, searched over +-`range`, and how clear that optimum is
+/// (best / mean score; ~1 means no kick structure).
+///
+/// A kick is a low thump *and* a high click at the same instant; a bass note
+/// is only the first, a hi-hat only the second. Scoring the product of the
+/// low-band (< 150 Hz) and high-band (> 2 kHz) energy rises keeps the grid
+/// off a tech-house bassline that hits a 16th after the kick (measured: a
+/// low-band-only detector locked 49-60 ms off on such tracks). 64-sample
+/// hops (2.9 ms at 22 kHz) are fine enough to beatmatch by. Near-ties go to
+/// the smaller correction.
+pub fn kick_phase_offset(samples: &[f32], rate: f64, beat: f64, phase: f64, range: f64) -> (f64, f64) {
+    let kl = 1.0 - (-2.0 * std::f64::consts::PI * 150.0 / rate).exp();
+    let kh = 1.0 - (-2.0 * std::f64::consts::PI * 2000.0 / rate).exp();
+    const HOP: usize = 64;
+    let (mut lp, mut lp2) = (0.0, 0.0);
+    let (mut lo, mut hi) = (Vec::with_capacity(samples.len() / HOP + 1), Vec::with_capacity(samples.len() / HOP + 1));
+    let (mut al, mut ah) = (0.0, 0.0);
+    for (i, s) in samples.iter().enumerate() {
+        let x = *s as f64;
+        lp += kl * (x - lp);
+        lp2 += kh * (x - lp2);
+        al += lp * lp;
+        ah += (x - lp2) * (x - lp2);
+        if (i + 1) % HOP == 0 {
+            lo.push(al.sqrt());
+            hi.push(ah.sqrt());
+            al = 0.0;
+            ah = 0.0;
+        }
+    }
+    let rise = |e: &[f64]| -> Vec<f64> {
+        let r: Vec<f64> = e.windows(2).map(|w| (w[1] - w[0]).max(0.0)).collect();
+        let m = r.iter().sum::<f64>() / r.len().max(1) as f64;
+        r.into_iter().map(|v| v / (m + 1e-12)).collect()
+    };
+    let (rl, rh) = (rise(&lo), rise(&hi));
+    let kick: Vec<f64> = rl.iter().zip(&rh).map(|(a, b)| a * (0.25 + b)).collect();
+    if kick.is_empty() {
+        return (0.0, 0.0);
+    }
+    let fps = rate / HOP as f64;
+    let end = kick.len() as f64 / fps - 0.01;
+    let score = |d: f64| {
+        let (mut s, mut t) = (0.0, phase + d);
+        while t < end {
+            if t >= 0.0 {
+                // A 3-hop window (8.7 ms) forgives tiny jitter in the transient.
+                let i = (t * fps) as usize;
+                s += kick[i.saturating_sub(1)..(i + 2).min(kick.len())].iter().cloned().fold(0.0, f64::max);
+            }
+            t += beat;
+        }
+        s
+    };
+    let steps = (range / 0.001).round() as i64;
+    let scores: Vec<(f64, f64)> = (-steps..=steps).map(|i| (i as f64 * 0.001, score(i as f64 * 0.001))).collect();
+    let top = scores.iter().map(|s| s.1).fold(f64::MIN, f64::max);
+    let mean = scores.iter().map(|s| s.1).sum::<f64>() / scores.len() as f64;
+    // Within 3% of the top, the smallest correction wins.
+    let best = scores.iter().filter(|s| s.1 >= 0.97 * top).min_by(|a, b| a.0.abs().total_cmp(&b.0.abs())).map(|s| s.0).unwrap_or(0.0);
+    (best, if mean > 0.0 { top / mean } else { 0.0 })
+}
+
 /// Joint (bpm, phase) search for one grid over the whole track. The peak is
 /// very sharp (measured: 706 at 174.0 vs 220 at 173.8 on a synthetic DnB
 /// track), so a coarse +-2.5% pass at 0.05 BPM finds it and a fine pass pins
@@ -424,6 +491,16 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
     let bpm0 = estimate_tempo(&onset, fps, center, width);
     let (bpm, phase_t, grid_conf) = fit_grid(&onset, bpm0, fps);
     let beat = 60.0 / bpm;
+    // Pin the grid to the kicks themselves. The fit above works on 23 ms
+    // frames of a 93 ms-window flux, corrected by one average lag; measured on
+    // a real library its error ran from -60 to +51 ms per track, so two
+    // "beatmatched" decks could flam by 110 ms. Only where the kicks are
+    // clear (sharpness), else the fit stands.
+    let (d, sharp) = kick_phase_offset(x, rate as f64, beat, phase_t, (0.25 * beat).min(0.125));
+    let mut phase_t = if sharp >= KICK_SHARPNESS { phase_t + d } else { phase_t };
+    while phase_t < 0.0 {
+        phase_t += beat;
+    }
 
     // Downbeat: the beat phase (mod 4) where the kick lands hardest, plus where
     // energy rises (sections start on a "one").

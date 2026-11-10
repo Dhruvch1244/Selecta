@@ -38,6 +38,8 @@ export class Deck {
   private src: AudioBufferSourceNode | null = null;
   private base: BaseLine = { t: 0, pos: 0, rate: 1 };
   private stoppedAt = Infinity;
+  /** When the current playback started (or is scheduled to). */
+  private startAt = 0;
   private readonly vca: GainNode;
   private readonly trimNode: GainNode;
   /** Stem gains (linear). On a 2-channel track `inst` is the whole track and `vox` has nothing to do. */
@@ -169,7 +171,14 @@ export class Deck {
    * keep working on it, and an earlier stop must still be able to reach it.
    */
   get playing(): boolean {
-    return this.src !== null && this.ctx.currentTime < this.stoppedAt;
+    const now = this.ctx.currentTime;
+    // Not before a scheduled start either (an incoming deck is armed a phrase
+    // early). Its own field: overrides move `base` (a jump lands at t1).
+    return this.src !== null && now >= this.startAt - 0.002 && now < this.stoppedAt;
+  }
+  /** Has a source with no stop scheduled: playing, or scheduled to start. */
+  get armed(): boolean {
+    return this.src !== null && this.stoppedAt === Infinity;
   }
   get rate(): number {
     return this.base.rate;
@@ -195,6 +204,7 @@ export class Deck {
     this.rev = null;
     this.busyUntil = 0;
     this.ov = null;
+    this.loop = null;
     const chans = Array.from({ length: Math.min(4, track.buffer.numberOfChannels) }, (_, i) => track.buffer.getChannelData(i));
     this.wave = computeWaveform(chans, track.buffer.sampleRate);
     this.base = { t: this.ctx.currentTime, pos: posOfBar(this.gridOrThrow(), track.analysis.startBar), rate: 1 };
@@ -241,6 +251,7 @@ export class Deck {
     };
     this.src = s;
     this.stoppedAt = Infinity;
+    this.startAt = when;
   }
 
   stop(at = this.ctx.currentTime): void {
@@ -261,7 +272,7 @@ export class Deck {
 
   /** Jump to a track position, keeping play state (quantised callers pass a grid time). */
   seek(pos: number, at = this.ctx.currentTime): void {
-    const was = this.playing;
+    const was = this.armed;
     this.stop(at);
     this.src = null;
     this.base = { t: Math.max(at, this.ctx.currentTime), pos, rate: this.base.rate };
@@ -376,6 +387,73 @@ export class Deck {
     this.src = s;
   }
 
+  /** Active loop (track seconds), if any. */
+  loop: { a: number; len: number; beats: number } | null = null;
+
+  /**
+   * Loop the next `beats` beats from the next beat (quantised, as on a CDJ),
+   * or exit the loop (`null`) on the next beat and play on from where the
+   * loop playhead is. Native buffer looping: sample-accurate, never drifts.
+   */
+  setLoop(beats: number | null): boolean {
+    const t = this.track;
+    if (!t || !this.src || this.stoppedAt !== Infinity) return false;
+    const g = this.gridOrThrow();
+    const at = Math.max(this.nextBeat(1, this.ctx.currentTime + 0.02), this.busyUntil === Infinity ? 0 : this.busyUntil);
+    const swap = (s: AudioBufferSourceNode) => {
+      this.vca.gain.cancelScheduledValues(at - DECLICK);
+      this.vca.gain.setValueAtTime(1, at - DECLICK);
+      this.vca.gain.linearRampToValueAtTime(0, at);
+      this.vca.gain.linearRampToValueAtTime(1, at + DECLICK);
+      this.src?.stop(at);
+      s.onended = () => {
+        if (this.src === s) {
+          this.src = null;
+          this.stoppedAt = Math.min(this.stoppedAt, this.ctx.currentTime);
+        }
+      };
+      this.src = s;
+    };
+    if (beats === null) {
+      if (!this.loop) return false;
+      const pos = this.position(at);
+      const s = this.source(t.buffer);
+      s.start(at, Math.max(0, pos));
+      swap(s);
+      this.base = { t: at, pos, rate: this.base.rate };
+      this.loop = null;
+      this.ov = null;
+      this.busyUntil = 0;
+      return true;
+    }
+    if (this.busyUntil > at && this.busyUntil !== Infinity) return false; // an effect owns playback
+    // Loop from the beat the playhead reaches at `at`, snapped to the grid.
+    const pos0 = this.loop ? this.position(at) : posAt(this.base, at);
+    const a = g.downbeat0 + Math.round((pos0 - g.downbeat0) / g.beat) * g.beat;
+    const len = beats * g.beat;
+    const s = this.source(t.buffer);
+    s.loop = true;
+    s.loopStart = a;
+    s.loopEnd = a + len;
+    s.start(at, a);
+    swap(s);
+    const rate = this.base.rate;
+    this.loop = { a, len, beats };
+    this.ov = { t0: at, t1: Infinity, posFn: (tt) => a + (((tt - at) * rate) % len) };
+    this.busyUntil = Infinity;
+    return true;
+  }
+
+  /** Jump `bars` (may be negative) on the next beat, keeping phase: the move every DJ uses to skip or repeat a phrase. */
+  beatJump(bars: number): boolean {
+    if (!this.track || !this.playing || this.loop) return false;
+    const at = this.nextBeat(1, this.ctx.currentTime + 0.02);
+    const g = this.gridOrThrow();
+    const pos = Math.max(0, posAt(this.base, at) + bars * 4 * g.beat);
+    this.seek(Math.min(pos, this.track.buffer.duration - 1), at);
+    return true;
+  }
+
   /** Head of the deck's chain: playback sources connect here. */
   get input(): AudioNode {
     return this.vca;
@@ -402,7 +480,8 @@ export class Deck {
     build: (t0: number, t1: number, pos0: number) => AudioBufferSourceNode[],
     opts: { after?: "slip" | "stop" | { pos: number }; posFn?: (t: number, pos0: number) => number } = {},
   ): boolean {
-    if (!this.track || !this.playing || !this.src || t0 < Math.max(this.ctx.currentTime, this.busyUntil)) return false;
+    // Armed or playing (a set arms the incoming deck before its start time).
+    if (!this.track || !this.src || !this.armed || t0 < Math.max(this.ctx.currentTime, this.busyUntil)) return false;
     const pos0 = posAt(this.base, t0);
     const declick = (t: number, up: boolean) => {
       this.vca.gain.setValueAtTime(up ? 0 : 1, t - (up ? 0 : DECLICK));

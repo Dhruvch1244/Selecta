@@ -35,7 +35,9 @@ export default defineConfig({
     ],
   },
   clearScreen: false,
-  server: { port: 1420, strictPort: true, watch: { ignored: ["**/src-tauri/**"] } },
+  // SELECTA_NO_HMR=1 for long browser tests: regenerating files (cargo test
+  // rewrites fx-catalog.json) must not reload a page mid-set.
+  server: { port: 1420, strictPort: true, hmr: process.env.SELECTA_NO_HMR ? false : undefined, watch: { ignored: ["**/src-tauri/**"] } },
   build: {
     target: "es2023",
     sourcemap: true,

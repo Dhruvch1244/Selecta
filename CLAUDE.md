@@ -22,7 +22,23 @@ npm run check          # eslint + typecheck + vitest
 npm run protocol       # regenerate TS types from Rust (commit the result)
 cargo test --workspace
 cargo run --release -p selecta-core --example analyze -- FILE...   # analyse real files, prints JSON
+cargo run --release -p selecta-core --example grid_check -- FILE... # beat-grid error vs real kicks (ms), per third
+cargo run --release -p selecta-core --example plan_db -- COPY.db --keylock [--reanalyse] "PROMPT"...  # real plans
+SELECTA_SELFTEST=1 ./target/release/selecta-desktop                  # audio self-test inside the real webview
 ```
+
+### Testing against the real library (not synthetic fixtures)
+
+1. `sqlite3 ~/.local/share/com.dhruvch1244.selecta/library.db ".backup /tmp/lib-copy.db"`
+   (never point tools at the live DB: opening it runs migrations).
+2. In `apps/ui/dev-fixtures/` (gitignored): symlink `lib -> ~/Music` and
+   `libstems -> ~/.local/share/com.dhruvch1244.selecta/stems`, then write
+   `real-library.json` (tracks + analysis + vocals paths) and `real-plans.json`
+   (from `plan_db`, paths rewritten to `/__fixtures__/lib/...`).
+3. `SELECTA_NO_HMR=1 npm run dev:ui`, open `/?mock=real`, and drive a whole set
+   over CDP, sampling `getEngine().master.peakDb` for silence gaps and the
+   conductor's status lines for holds. Without `SELECTA_NO_HMR`, a `cargo test`
+   (it rewrites `fx-catalog.json`) reloads the page mid-set.
 
 ## Architecture rules
 
@@ -87,6 +103,15 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
   timestamps give the page a second store instance and the test sees an empty one.
 - **zsh doesn't word-split `$VAR`:** a file list in a variable is one argument.
   Use `git diff --name-only --diff-filter=U | xargs -r git checkout --ours --`.
+- **Beat grids must be pinned to the kicks:** the coarse tempo/phase fit
+  (23 ms frames) was off by -60..+51 ms per track on a real library, so
+  "beatmatched" decks flammed by up to 110 ms. `kick_phase_offset` refines
+  the phase on a 2.9 ms envelope, scoring low-thump x high-click so a
+  tech-house bassline a 16th after the kick can't capture it. Check with
+  `--example grid_check` (every third of each track should read ~0 ms).
+- **Duplicate songs:** a real library held 33 duplicate files out of 157 (an
+  .opus rip and a tagged .m4a). The planner dedupes by `song_key`; without it
+  sets played the same song twice.
 
 ## Dependencies
 

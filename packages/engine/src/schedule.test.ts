@@ -4,7 +4,7 @@ import { KILL_DB, scheduleTransition, type Move } from "./schedule";
 
 const barSec = 1.379; // 174 BPM
 const barTime = (b: number) => 10 + b * barSec;
-const tr = (p: Partial<Transition>): Transition => ({ kind: "blend", fromBar: 48, len: 16, enterAt: 48, swapAt: 56, echoDiv: null, voxOut: null, ...p });
+const tr = (p: Partial<Transition>): Transition => ({ kind: "blend", fromBar: 48, len: 16, enterAt: 48, swapAt: 56, echoDiv: null, voxOut: null, loopFrom: null, loopBars: null, ...p });
 const last = (moves: Move[], side: string, target: string) => moves.filter((m) => m.side === side && m.target === target).at(-1)!;
 
 describe("scheduleTransition", () => {

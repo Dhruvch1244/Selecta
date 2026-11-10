@@ -26,4 +26,14 @@ echoDiv: number | null,
  * Outgoing-track bar where the outgoing's vocal stem is muted, so two
  * vocals never clash (stem tracks only).
  */
-voxOut: number | null, };
+voxOut: number | null, 
+/**
+ * Stem moves: incoming-track bar of a sung hook that loops (phrase-locked
+ * to the outgoing) from `enter_at` until the swap, instead of playing the
+ * incoming's pre-drop bars straight through.
+ */
+loopFrom: number | null, 
+/**
+ * Length of that hook loop in incoming bars (4 or 8).
+ */
+loopBars: number | null, };

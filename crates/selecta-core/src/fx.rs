@@ -239,16 +239,29 @@ pub fn direct(a: &Analysis, genre: Option<&str>, in_bar: u32, transition_from: u
         if !(lo + 4.0..hi).contains(&d) {
             continue;
         }
-        if rng.next_f64() < 0.3 + 0.65 * chaos {
-            let len = if chaos > 0.6 { 8.0 } else { 4.0 };
-            let choice = *rng.pick(&[("riser", 3.0), ("roll_build", 2.0 * chaos + 0.5), ("hp_sweep", 2.0)]);
-            let id = match choice {
-                "riser" => format!("riser:{}", len as u32),
-                "roll_build" => format!("roll_build:{}", if chaos > 0.6 { 2 } else { 1 }),
-                _ => format!("hp_sweep:{}", len as u32),
-            };
-            let beats = def(&id).map(|x| x.beats).unwrap_or(16.0);
-            put(&mut cues, &mut taken, d - beats / 4.0, &id, format!("Build into the drop at bar {d}"));
+        if rng.next_f64() < 0.45 + 0.5 * chaos {
+            // A build is a stack, not one effect: a riser over the last 4-8
+            // bars, the track high-passed away over the last 2-4, and at
+            // higher chaos a loop roll tightening through the final bar.
+            // (One random effect per build was the "weak buildups" feedback.)
+            // They act on different parts of the chain (master synth, deck
+            // filter insert, deck playback), so they layer cleanly.
+            let long = chaos > 0.55;
+            let (riser, sweep) = if long { ("riser:8", "hp_sweep:4") } else { ("riser:4", "hp_sweep:2") };
+            let span = def(riser).map(|x| x.beats / 4.0).unwrap_or(4.0);
+            let start = d - span;
+            if start >= lo && free(&taken, start, d) {
+                let reason = format!("Build into the drop at bar {d}");
+                for (id, layer) in [(riser, "riser"), (sweep, "sweep"), ("roll_build:1", "roll")] {
+                    if layer == "roll" && chaos < 0.45 {
+                        continue;
+                    }
+                    if let Some(x) = def(id) {
+                        cues.push(FxCue { bar: d - x.beats / 4.0, fx: id.into(), beats: x.beats, reason: reason.clone() });
+                    }
+                }
+                taken.push((start, d));
+            }
         }
         // Hit the one, but not every drop and never twice in a row.
         if !last_hit && rng.next_f64() < 0.25 + 0.6 * chaos {
