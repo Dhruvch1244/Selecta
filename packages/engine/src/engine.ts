@@ -11,6 +11,8 @@ export class Engine {
   readonly limiterReady: Promise<void>;
   /** The limiter worklet is in the signal path (false: it failed to load and the mix runs unlimited). */
   limiterActive = false;
+  /** Deepest limiter gain reduction over the last ~50 ms (dB, <= 0). */
+  limiterReductionDb = 0;
   /** Master one-shots (horns, risers, impacts) join the mix before the limiter. */
   readonly fxBus: GainNode;
   master: MeterState = newMeter();
@@ -38,9 +40,11 @@ export class Engine {
       this.mix.disconnect(this.volume);
       this.mix.connect(lim).connect(this.volume);
       this.limiterActive = true;
+      lim.port.onmessage = (e: MessageEvent<number>) => (this.limiterReductionDb = e.data);
     }).catch((e) => console.warn("limiter unavailable, running unlimited:", e));
     this.volume.connect(this.analyser);
     this.decks = { A: new Deck(ctx, "A", this.mix), B: new Deck(ctx, "B", this.mix) };
+    for (const d of Object.values(this.decks)) d.heardTime = () => this.heardTime();
   }
 
   /** Browsers start contexts suspended until a user gesture. */
@@ -64,9 +68,21 @@ export class Engine {
     this.decks.B.tickMeter(nowMs, dtMs);
   }
 
+  /**
+   * Extra delay of the speakers beyond what the browser reports (seconds):
+   * Bluetooth codecs buffer 100-300 ms that WebKit doesn't know about (it
+   * reported 3 ms on an SBC speaker). Calibrated in Settings.
+   */
+  outputDelay = 0;
+
+  /** Context time of the audio being heard *now*: what every visual must show. */
+  heardTime(): number {
+    return this.ctx.currentTime - (this.ctx.outputLatency || 0) - this.ctx.baseLatency - this.outputDelay;
+  }
+
   /** Output latency the user actually hears, for the status bar. */
   get latencyMs(): number {
-    return Math.round(((this.ctx.outputLatency || 0) + this.ctx.baseLatency) * 1000);
+    return Math.round(((this.ctx.outputLatency || 0) + this.ctx.baseLatency + this.outputDelay) * 1000);
   }
 }
 

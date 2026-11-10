@@ -40,6 +40,22 @@ SELECTA_SELFTEST=1 ./target/release/selecta-desktop                  # audio sel
    conductor's status lines for holds. Without `SELECTA_NO_HMR`, a `cargo test`
    (it rewrites `fx-catalog.json`) reloads the page mid-set.
 
+### Listening test of the real app (what the user actually hears)
+
+Route the real app to a null sink, record it, analyse the recording; nothing
+reaches the speakers and no other app is captured:
+
+```sh
+MOD=$(pactl load-module module-null-sink sink_name=selecta_test)
+parecord -d selecta_test.monitor --file-format=wav rec.wav &
+PULSE_SINK=selecta_test SELECTA_AUTOPLAY="prompt" SELECTA_AUTOPLAY_MIN=6 ./target/release/selecta-desktop
+pactl unload-module $MOD   # always
+```
+
+`SELECTA_AUTOPLAY` rescans, plans by rules (no AI quota), plays, logs every
+conductor event and exits. Check the recording for dropouts, clicks and
+silences, and check that the logged transitions are what the prompt asked for.
+
 ## Architecture rules
 
 Read docs/ARCHITECTURE.md. In short: `selecta-core` never imports Tauri;
@@ -109,6 +125,14 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
   the phase on a 2.9 ms envelope, scoring low-thump x high-click so a
   tech-house bassline a 16th after the kick can't capture it. Check with
   `--example grid_check` (every third of each track should read ~0 ms).
+- **Headless test browsers must be muted:** start Chrome with `--mute-audio`
+  (or route it to a null sink). An unmuted CDP test once played whole test sets
+  through the user's Bluetooth speaker.
+- **Bluetooth output delay is invisible to the app:** WebKit reported 3 ms and
+  PipeWire 0 µs on an SBC speaker that is ~200 ms late, so the decks drew
+  ahead of the sound (~1/6 bar). Visuals use `Engine.heardTime()`, which
+  includes the calibrated `outputDelay` (Settings → Output; defaults from the
+  detected codec).
 - **Duplicate songs:** a real library held 33 duplicate files out of 157 (an
   .opus rip and a tagged .m4a). The planner dedupes by `song_key`; without it
   sets played the same song twice.

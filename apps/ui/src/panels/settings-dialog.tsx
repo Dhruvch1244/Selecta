@@ -6,7 +6,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/dsgn/select";
 import { Switch } from "@/components/dsgn/switch";
 import { api } from "@/lib/api";
-import { useApp } from "@/lib/store";
+import { onFrame } from "@/lib/frame";
+import { getEngine, outputDelayMs, useApp } from "@/lib/store";
 
 /**
  * Settings: music folders and the AI brain. Changes save immediately (no
@@ -69,13 +70,13 @@ export function SettingsDialog({ open: isOpen, onOpenChange }: { open: boolean; 
           </Row>
           {ai.provider === "claude" && (
             <>
-              <Row label="Model" hint="Sonnet curates best; Haiku is fastest; Opus is deepest and slowest.">
+              <Row label="Model" hint="Used for every step: reading the request, placing the songs and choosing transitions, writing the notes. Opus is the deepest (a set takes 2-5 minutes); Sonnet is quicker.">
                 <Select value={ai.model} onValueChange={(v) => setAi({ model: v })}>
                   <SelectTrigger className="h-8 w-44 text-xs" aria-label="Claude model"><SelectValue /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="opus">Opus</SelectItem>
                     <SelectItem value="sonnet">Sonnet</SelectItem>
                     <SelectItem value="haiku">Haiku</SelectItem>
-                    <SelectItem value="opus">Opus</SelectItem>
                   </SelectContent>
                 </Select>
               </Row>
@@ -123,6 +124,8 @@ export function SettingsDialog({ open: isOpen, onOpenChange }: { open: boolean; 
           )}
         </Section>
 
+        <OutputSection />
+
         <Section title="Playback">
           <Row
             label="Keylock"
@@ -135,6 +138,100 @@ export function SettingsDialog({ open: isOpen, onOpenChange }: { open: boolean; 
         <StemsSection />
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Speaker delay: what the visuals (playhead, beat readouts, Lyric Overlay
+ * position) must allow for. Bluetooth buffers 100-300 ms that WebKit doesn't
+ * report, so the decks drew ahead of the sound. The sync test clicks on every
+ * beat and flashes when the click is *heard*: slide until they coincide.
+ */
+function OutputSection() {
+  const settings = useApp((s) => s.settings);
+  const output = useApp((s) => s.output);
+  const { saveSettings } = useApp.getState();
+  const [testing, setTesting] = React.useState(false);
+  const dot = React.useRef<HTMLSpanElement>(null);
+  const current = outputDelayMs(settings, output);
+  const [draft, setDraft] = React.useState(current);
+  React.useEffect(() => setDraft(current), [current]);
+
+  React.useEffect(() => {
+    if (!testing) return;
+    const eng = getEngine();
+    void eng.resume();
+    const ctx = eng.ctx;
+    const beat = 0.5;
+    let next = Math.ceil(ctx.currentTime / beat) * beat + beat;
+    const clicks: number[] = [];
+    const timer = setInterval(() => {
+      // Keep half a second of clicks scheduled ahead on the audio clock.
+      while (next < ctx.currentTime + 0.5) {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.frequency.value = clicks.length % 4 === 0 ? 1760 : 1320;
+        g.gain.setValueAtTime(0.5, next);
+        g.gain.exponentialRampToValueAtTime(0.001, next + 0.04);
+        o.connect(g).connect(eng.fxBus);
+        o.start(next);
+        o.stop(next + 0.05);
+        clicks.push(next);
+        next += beat;
+      }
+    }, 50);
+    const stop = onFrame(() => {
+      const el = dot.current;
+      if (!el) return;
+      const heard = eng.heardTime();
+      const lit = clicks.some((c) => heard >= c && heard < c + 0.08);
+      el.style.opacity = lit ? "1" : "0.12";
+    });
+    return () => {
+      clearInterval(timer);
+      stop();
+    };
+  }, [testing]);
+
+  if (!settings) return null;
+  const commit = (ms: number | null) => void saveSettings({ ...settings, outputDelayMs: ms });
+  return (
+    <Section title="Output">
+      <Row
+        label={output ? output.description : "Audio output"}
+        hint={
+          output?.bluetooth
+            ? `Bluetooth (${output.codec ?? "unknown codec"}): typically ~${output.suggestedDelayMs} ms late, which the system doesn't report. Calibrate below.`
+            : "Wired output: little extra delay. Calibrate if the playhead and the sound disagree."
+        }
+      >
+        <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{Math.round(draft)} ms</span>
+      </Row>
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          min={0}
+          max={500}
+          step={5}
+          value={draft}
+          onChange={(e) => setDraft(Number(e.target.value))}
+          onPointerUp={() => commit(draft)}
+          onKeyUp={() => commit(draft)}
+          aria-label="Speaker delay in milliseconds"
+          className="h-1 flex-1 accent-[var(--accent)]"
+        />
+        <Button size="xs" variant={testing ? "accent" : "secondary"} onClick={() => setTesting((t) => !t)}>
+          {testing ? "Stop sync test" : "Sync test"}
+        </Button>
+        <span ref={dot} aria-hidden className="h-3 w-3 rounded-full bg-accent transition-opacity duration-75" style={{ opacity: 0.12 }} />
+        {settings.outputDelayMs !== null && (
+          <Button size="xs" variant="ghost" onClick={() => commit(null)}>
+            Auto
+          </Button>
+        )}
+      </div>
+      {testing && <p className="text-[11px] text-muted-foreground">Listen to the clicks and watch the dot: move the slider until it flashes exactly on each click.</p>}
+    </Section>
   );
 }
 

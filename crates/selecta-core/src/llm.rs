@@ -37,7 +37,7 @@ pub struct AiConfig {
 
 impl Default for AiConfig {
     fn default() -> Self {
-        AiConfig { provider: "claude".into(), model: "sonnet".into(), binary: "claude".into(), curate: true, tag_library: true }
+        AiConfig { provider: "claude".into(), model: "opus".into(), binary: "claude".into(), curate: true, tag_library: true }
     }
 }
 
@@ -200,48 +200,76 @@ pub struct Curation {
     pub vibe: Option<String>,
     /// Human-readable DJ ideas ("Badtameez Dil: let the crowd sing the hook").
     pub moments: Vec<String>,
+    /// Incoming track id -> the transition the curator wants into it
+    /// (a TransitionKind id). Used when the pair can support it.
+    pub moves: BTreeMap<String, String>,
+}
+
+/// Facts the curator gets per track: enough to *place* songs, not just pick
+/// them (tempo, key, energy, where the drops are, how much singing, whether
+/// there is a sung hook to loop).
+fn track_row(i: usize, c: &Candidate) -> String {
+    let a = &c.analysis;
+    let g = c.genres.iter().max_by(|x, y| x.1.partial_cmp(y.1).unwrap()).map(|(g, _)| g.as_str()).unwrap_or("?");
+    let tags = c.tags.as_ref();
+    let mmss = |s: f64| format!("{}:{:02}", (s / 60.0) as u32, (s % 60.0) as u32);
+    let bar_t = |b: u32| a.downbeat0 + b as f64 * 4.0 * a.beat;
+    let drops: Vec<String> = a.drops.iter().take(3).map(|d| mmss(bar_t(*d))).collect();
+    let hot = a.bar_energy.iter().filter(|e| **e > 0.75).count() as f64 / a.bar_energy.len().max(1) as f64;
+    let vocal = c
+        .vocals
+        .as_ref()
+        .map(|v| format!("{:.0}%", 100.0 * v.iter().filter(|x| **x > 0.4).count() as f64 / v.len().max(1) as f64))
+        .unwrap_or_else(|| "?".into());
+    let hook = if crate::planner::has_vocal_hook(c) { "hook" } else { "-" };
+    format!(
+        "{} | {} | {} | {:.0} | {} | {:.2} | {} | {} | {} | {} | {} | {} | {}",
+        i + 1,
+        c.track.artist,
+        c.track.title,
+        a.bpm,
+        a.camelot,
+        hot,
+        vocal,
+        hook,
+        if drops.is_empty() { "-".into() } else { drops.join(" ") },
+        mmss(a.duration),
+        g,
+        tags.map(|t| t.mood.as_str()).unwrap_or(""),
+        tags.map(|t| t.lang.as_str()).unwrap_or(""),
+    )
 }
 
 pub fn curation_prompt(it: &Intent, wide: &[&Candidate], need: usize) -> String {
-    let rows: Vec<String> = wide
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let g = c.genres.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(g, _)| g.as_str()).unwrap_or("?");
-            let mood = c.tags.as_ref().map(|t| t.mood.as_str()).unwrap_or("");
-            format!(
-                "{} | {} | {} | {:.0} | {} | {} | {}",
-                i + 1,
-                c.track.artist,
-                c.track.title,
-                c.analysis.bpm,
-                c.analysis.camelot,
-                g,
-                mood
-            )
-        })
-        .collect();
+    let rows: Vec<String> = wide.iter().enumerate().map(|(i, c)| track_row(i, c)).collect();
     format!(
-        "You are a world-class DJ who knows Bollywood, Punjabi, desi hip hop, drum & bass, house, hip hop and pop deeply.\n\
-         Curate a DJ set from MY library for this request: \"{prompt}\"\n\
-         Parsed so far: genres={genres}; energy={energy:?}; about {mins:.0} minutes, so roughly {need} tracks.\n\n\
-         Use your knowledge of the actual songs: which are bangers vs ballads, which a crowd sings along to, which fit this vibe.\n\
-         List \"picks\" in your suggested RUNNING ORDER (first = opener). Score each plausible track 0-10 (10 = perfect for this\n\
-         request and crowd) and give it a role. Put tracks that clearly don't fit (e.g. a sad ballad at a party, wrong genre) in \"avoid\".\n\
-         Optionally suggest up to 5 DJ moments.\n\n\
+        "You are a world-class DJ (think the energy and precision of top club and festival DJs) who knows Bollywood, Punjabi,\n\
+         desi hip hop, hip hop, drum & bass, house and pop deeply. Build the set for this request: \"{prompt}\"\n\
+         Parsed so far: genres={genres}; energy={energy:?}; rapid mixing={rapid}; mashup appetite={mash:.1}; about {mins:.0} minutes,\n\
+         so about {need} tracks (fewer if tracks are long, more for rapid mixing).\n\n\
+         YOU decide the exact running order: it will be played exactly as you list it. Use what you know about the actual\n\
+         songs (bangers vs ballads, sing-alongs, which drops hit hardest) and the measured facts below. Build a real arc.\n\n\
+         For every pick after the first, choose the transition INTO it from the previous pick:\n\
+         - beatmatched (need BPMs within 10% of each other, or half/double): blend (long), bassswap, double_drop (both have drops),\n\
+           filter, mashup (both drops at once, one vocal: both need vocals% > 20), bootleg (its vocal rides the previous beat for\n\
+           16-32 bars: it needs a 'hook'), acapella_build (its vocal over the previous track's last phrase: it needs vocals%).\n\
+         - any tempo: echo_out, slam, backspin, tape_stop, rewind, loop_roll (use the turntable ones sparingly).\n\
+         Prefer beatmatched moves wherever tempos allow; vary the moves; harmonic keys (Camelot neighbours) mix best.\n\n\
          Return ONLY JSON:\n\
-         {{\"title\": \"catchy set name\", \"vibe\": \"one line\", \"picks\": [{{\"n\": 12, \"score\": 9, \"role\": \"opener|builder|peak|closer\"}}],\n\
-          \"avoid\": [3, 7], \"moments\": [{{\"n\": 12, \"idea\": \"...\"}}]}}\n\n\
-         My library (n | artist | title | bpm | key | detected genre | mood):\n{rows}",
+         {{\"title\": \"catchy set name\", \"vibe\": \"one line\",\n\
+          \"picks\": [{{\"n\": 12, \"score\": 9, \"role\": \"opener|builder|peak|closer\", \"move\": \"bootleg\"}}],\n\
+          \"avoid\": [3, 7]}}\n\n\
+         My library (n | artist | title | bpm | camelot key | energy 0-1 | vocals% | sung hook | drops at | length | genre | mood | language):\n{rows}",
         prompt = it.prompt,
         genres = if it.genres.is_empty() { "open".to_string() } else { it.genres.keys().cloned().collect::<Vec<_>>().join(",") },
         energy = it.energy,
+        rapid = it.rapid,
+        mash = it.mashups,
         mins = it.duration_min,
         rows = rows.join("\n"),
     )
 }
 
-/// Map a curation reply (1-based row numbers) back onto track ids.
 pub fn parse_curation(v: &serde_json::Value, wide: &[&Candidate]) -> Curation {
     let id_of = |n: &serde_json::Value| n.as_u64().and_then(|n| wide.get((n as usize).checked_sub(1)?)).map(|c| c.track.id.clone());
     let mut cur = Curation {
@@ -257,6 +285,9 @@ pub fn parse_curation(v: &serde_json::Value, wide: &[&Candidate]) -> Curation {
         }
         if score >= 5.0 && !cur.order.contains(&id) {
             cur.order.push(id.clone());
+            if let Some(m) = p["move"].as_str().filter(|m| crate::planner::TransitionKind::from_id(m).is_some()) {
+                cur.moves.insert(id.clone(), m.to_string());
+            }
         }
         cur.scores.insert(id, score);
     }
@@ -268,6 +299,81 @@ pub fn parse_curation(v: &serde_json::Value, wide: &[&Candidate]) -> Curation {
         }
     }
     cur
+}
+
+/// Liner notes written *from the final plan*: the title, the vibe and the
+/// moments, so what the AI says always matches what plays (the curator's own
+/// notes described its wish list, which the planner could then reorder).
+pub struct LinerNotes {
+    pub title: Option<String>,
+    pub vibe: Option<String>,
+    /// (position in the set, 0-based; note)
+    pub moments: Vec<(usize, String)>,
+}
+
+/// At most `max` chars, ending on a full sentence when one fits (a note cut
+/// mid-word reads as broken).
+fn sentence_cap(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    match head.rfind(". ") {
+        Some(i) if i > max / 3 => head[..=i].to_string(),
+        _ => format!("{}…", head.trim_end()),
+    }
+}
+
+pub fn liner_notes(cfg: &AiConfig, plan: &crate::planner::SetPlan) -> Result<LinerNotes, String> {
+    let mmss = |s: f64| format!("{}:{:02}", (s / 60.0) as u32, (s % 60.0) as u32);
+    let mut at = 0.0;
+    let rows: Vec<String> = plan
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let row = format!(
+                "{} | {} | {} - {} | {:.0} BPM{} | {} | in by {}{}",
+                i + 1,
+                mmss(at),
+                t.artist,
+                t.title,
+                t.bpm * t.rate,
+                if t.key_shift != 0 { format!(" (key {:+} st)", t.key_shift) } else { String::new() },
+                t.camelot,
+                t.trans.kind_label(),
+                if t.trans.loop_from.is_some() { " (looped vocal hook)" } else { "" },
+            );
+            at += t.est_sec;
+            row
+        })
+        .collect();
+    let prompt = format!(
+        "You are the DJ who will play this exact set for the request \"{}\". Write its liner notes.\n\
+         Describe ONLY what is listed: these tracks, in this order, with these transitions. Do not invent tracks or moves.\n\
+         Return ONLY JSON: {{\"title\": \"catchy set name\", \"vibe\": \"one or two sentences on the journey\",\n\
+          \"moments\": [{{\"n\": <track number>, \"note\": \"what happens here and why it works\"}}]}} (3 to 6 moments).\n\n\
+         The set (n | starts at | track | tempo | key | transition into it):\n{}",
+        plan.prompt,
+        rows.join("\n")
+    );
+    let v = ask_json(cfg, &prompt, Duration::from_secs(180))?;
+    let n = plan.tracks.len();
+    Ok(LinerNotes {
+        title: v["title"].as_str().map(|s| s.trim().trim_matches('"').to_string()).filter(|s| (3..48).contains(&s.len())),
+        vibe: v["vibe"].as_str().map(|s| sentence_cap(s, 400)),
+        moments: v["moments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| {
+                let i = (m["n"].as_u64()? as usize).checked_sub(1).filter(|i| *i < n)?;
+                Some((i, sentence_cap(m["note"].as_str()?, 420)))
+            })
+            .take(6)
+            .collect(),
+    })
 }
 
 pub fn curate(cfg: &AiConfig, it: &Intent, wide: &[&Candidate], need: usize) -> Result<Curation, String> {

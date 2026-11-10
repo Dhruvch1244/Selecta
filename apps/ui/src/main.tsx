@@ -37,7 +37,10 @@ createRoot(document.getElementById("root")!).render(
 // *not* a top-level await: in the production bundle the engine chunk imports
 // from this entry chunk, so awaiting its import here deadlocks (measured: the
 // release app hung while the dev app passed).
-if ("__TAURI_INTERNALS__" in window) void runSelfTestIfAsked();
+if ("__TAURI_INTERNALS__" in window) {
+  void runSelfTestIfAsked();
+  void runAutoplayIfAsked();
+}
 
 async function runSelfTestIfAsked() {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -63,4 +66,39 @@ async function runSelfTestIfAsked() {
   results.push(lim);
   void eng.ctx.close();
   await invoke("self_test_report", { lines: [], ok: results.every((x) => x.pass) });
+}
+
+/** `SELECTA_AUTOPLAY="prompt"`: rescan, plan by rules, play for N minutes, log events, exit. */
+async function runAutoplayIfAsked() {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const cfg = await invoke<[string, number, boolean] | null>("autoplay_config").catch(() => null);
+  if (!cfg) return;
+  const [prompt, minutes, withAi] = cfg;
+  const log = (line: string) => void invoke("self_test_log", { line: `[${(performance.now() / 1000).toFixed(1)}s] ${line}` }).catch(() => {});
+  const { useApp, getEngine } = await import("@/lib/store");
+  const { useSet } = await import("@/lib/set-store");
+  useApp.subscribe((s, p) => {
+    if (s.status !== p.status) log(`status: ${s.status}`);
+  });
+  await useApp.getState().refreshLibrary();
+  await useApp.getState().scan();
+  for (let i = 0; i < 600; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const st = useApp.getState();
+    if (!st.analysing && st.tracks.every((t) => t.analyzed || t.error)) break;
+  }
+  log(`library ready: ${useApp.getState().tracks.length} tracks`);
+  await useSet.getState().build(prompt, withAi ? {} : { noAi: true });
+  const plan = useSet.getState().plan;
+  if (!plan) return void invoke("self_test_report", { lines: [], ok: false });
+  log(`title: ${plan.title} | vibe: ${plan.intent.vibe ?? ""}`);
+  plan.tracks.forEach((t, i) => log(`plan ${i}: ${t.trans.kind}${t.trans.loopFrom != null ? " (hook loop)" : ""} ${t.artist} - ${t.title} rate ${t.rate.toFixed(3)} keyShift ${t.keyShift} in ${t.inBar}`));
+  plan.notes.forEach((n) => log(`note: ${n}`));
+  const t0 = performance.now();
+  await useSet.getState().play();
+  log(`playing; latency ${getEngine().latencyMs} ms`);
+  while (performance.now() - t0 < minutes * 60000 && useSet.getState().playing) await new Promise((r) => setTimeout(r, 1000));
+  useSet.getState().stop();
+  log("autoplay done");
+  await invoke("self_test_report", { lines: [], ok: true });
 }

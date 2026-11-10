@@ -5,7 +5,7 @@
 import { Engine, type DeckId, keylockSemitones, matchRate, posOfBar, shiftPitch } from "@selecta/engine";
 import type { Analysis, TrackSummary } from "@selecta/protocol";
 import { create } from "zustand";
-import { api, type Settings } from "./api";
+import { api, type AudioOutput, type Settings } from "./api";
 import { loadTrackAudio } from "./track-audio";
 
 let engine: Engine | null = null;
@@ -17,6 +17,14 @@ export function getEngine(): Engine {
   return engine;
 }
 export const peekEngine = (): Engine | null => engine;
+
+/** The speaker delay every visual must allow for: calibrated, else the output's typical one. */
+export function outputDelayMs(settings: Settings | null, output: AudioOutput | null): number {
+  return settings?.outputDelayMs ?? output?.suggestedDelayMs ?? 0;
+}
+function applyOutputDelay(settings: Settings | null, output: AudioOutput | null) {
+  getEngine().outputDelay = outputDelayMs(settings, output) / 1000;
+}
 
 export interface DeckView {
   trackId: string | null;
@@ -38,6 +46,8 @@ interface State {
   analysing: { done: number; total: number } | null;
   tagging: { done: number; total: number } | null;
   stemming: { done: number; total: number } | null;
+  /** Detected audio output (for the speaker-delay default). */
+  output: AudioOutput | null;
   status: string;
   decks: Record<DeckId, DeckView>;
   refreshLibrary: () => Promise<void>;
@@ -62,6 +72,7 @@ export const useApp = create<State>((set, get) => {
     analysing: null,
     tagging: null,
     stemming: null,
+    output: null,
     status: "",
     decks: { A: emptyDeck(), B: emptyDeck() },
 
@@ -69,7 +80,9 @@ export const useApp = create<State>((set, get) => {
 
     refreshLibrary: async () => {
       const [settings, tracks] = await Promise.all([api.settings(), api.tracks()]);
-      set({ settings, tracks });
+      const output = get().output ?? (await api.audioOutput().catch(() => null));
+      set({ settings, tracks, output });
+      applyOutputDelay(settings, output);
     },
 
     setMusicDirs: async (musicDirs) => {
@@ -82,6 +95,7 @@ export const useApp = create<State>((set, get) => {
     saveSettings: async (settings) => {
       await api.saveSettings(settings);
       set({ settings });
+      applyOutputDelay(settings, get().output);
     },
 
     scan: async () => {

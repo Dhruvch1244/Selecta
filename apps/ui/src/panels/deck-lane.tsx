@@ -32,8 +32,9 @@ export function DeckLane({ id }: { id: DeckId }) {
         const el = readout.current;
         const tr = deck.track;
         if (!el || !tr) return;
-        const pos = deck.position();
-        el.textContent = `${fmt(pos)} / -${fmt(Math.max(0, (tr.analysis.duration - pos) / deck.rate))} · bar ${Math.floor(deck.bar())}`;
+        const t = deck.heardTime();
+        const pos = deck.position(t);
+        el.textContent = `${fmt(pos)} / -${fmt(Math.max(0, (tr.analysis.duration - pos) / deck.rate))} · bar ${Math.floor(deck.bar(t))}`;
       }),
     [deck],
   );

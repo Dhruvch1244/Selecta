@@ -48,7 +48,8 @@ export function snapshot(): NowPlaying | null {
   const t = d.track;
   if (!t) return null;
   const meta = useApp.getState().tracks.find((x) => x.id === t.id);
-  const heard = d.position() - (d.playing ? (eng.latencyMs / 1000) * d.rate : 0);
+  // What the listener hears now (speaker delay included), so the Lyric Overlay's lyrics land on time.
+  const heard = d.position(eng.heardTime());
   return {
     id: t.id,
     title: t.title,

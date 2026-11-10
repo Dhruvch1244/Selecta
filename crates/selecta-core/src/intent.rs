@@ -179,6 +179,14 @@ const MASHUP: &[&str] = &[
     "edits",
     "blend vocals",
     "stems",
+    "vocals of",
+    "over other song",
+    "over other songs",
+    "over another song",
+    "over each other",
+    "over the beat",
+    "over other beats",
+    "acapella over",
 ];
 
 fn duration(text: &str) -> Option<f64> {
@@ -253,6 +261,10 @@ pub fn parse(prompt: &str, library_artists: &[String]) -> Intent {
     };
     if rapid {
         chaos = chaos.max(0.75);
+    }
+    // "switching styles", "mix it up": variety in the transitions themselves.
+    if any(&["switching styles", "switch styles", "different styles", "mix it up", "variety", "all kinds of transitions"]) {
+        chaos = chaos.max(0.7);
     }
     let mashups = if any(MASHUP) {
         0.9
