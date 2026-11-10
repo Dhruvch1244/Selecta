@@ -211,6 +211,39 @@ export async function selfTest(onResult?: (r: SelfTestResult) => void): Promise<
     const ratio = later / Math.max(first, 1e-9);
     add("loop repeats the beat (level 8 beats later / first)", ratio, looped && Math.abs(ratio - 1) < 0.02, "1.00 ± 0.02");
   }
+  // Layer loop: a loop deck riding a host at another tempo must land every
+  // beat on the host's grid, for the whole layer (native looping, rate from
+  // the beat periods): source clicks every 0.52 s looped for a bar, host
+  // playing a 0.5 s beat at rate 1.04. Max onset error over 20 s.
+  {
+    const secs = 21;
+    const ctx = new OfflineAudioContext(2, secs * SR, SR);
+    const srcBeat = 0.52;
+    const b = ctx.createBuffer(2, 12 * SR, SR);
+    for (let c = 0; c < 2; c++) {
+      const d = b.getChannelData(c);
+      for (let k = 0; k * srcBeat < 12; k++) for (let i = 0; i < 48; i++) d[Math.round(k * srcBeat * SR) + i] = 0.8;
+    }
+    const layer = new Deck(ctx, "C", ctx.destination);
+    layer.load({ id: "s", artist: "", title: "", buffer: b, analysis: { ...fakeAnalysis(12), beat: srcBeat } as Analysis });
+    const hostBeat = 0.5 / 1.04;
+    layer.setRate(srcBeat / hostBeat);
+    const t0 = 0.5;
+    layer.playLoop(t0, 4 * srcBeat, 4 * srcBeat, 20.5);
+    const out = await ctx.startRendering();
+    const d = out.getChannelData(0);
+    let worst = 0;
+    let n = 0;
+    for (let k = 1; t0 + k * hostBeat < 20.3; k++) {
+      const want = t0 + k * hostBeat;
+      const lo = Math.round((want - 0.1) * SR);
+      let i = lo;
+      while (i < lo + 0.2 * SR && Math.abs(d[i] ?? 0) < 0.4) i++;
+      worst = Math.max(worst, Math.abs(i / SR - want) * 1000);
+      n++;
+    }
+    add("layer loop on the host grid, 40 beats (max ms off)", worst, n > 35 && worst < 1, "< 1 ms");
+  }
   add("stem kills: both / vox off / inst off (amplitude)", both, stemOk, `0.75 / 0.50 / 0.25, got ${both.toFixed(2)} / ${noVox.toFixed(2)} / ${noInst.toFixed(2)}`);
   return r;
 }

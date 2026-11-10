@@ -271,13 +271,14 @@ function Timeline({ tracks, current }: { tracks: SetTrack[]; current: number }) 
             style={{ flex: `${Math.max(20, t.estSec)} 1 0`, background: `color-mix(in srgb, ${deck} ${i === current ? 32 : 18}%, var(--card))`, borderTop: `2px solid ${deck}` }}
             {...hintProps({
               label: `${i + 1}. ${t.artist} – ${t.title}`,
-              value: `${t.genreLabel || "?"} · ${t.bpm.toFixed(1)} BPM${t.rate !== 1 ? ` → ${(t.bpm * t.rate).toFixed(1)}` : ""} · ${t.camelot}${t.keyShift ? ` → shifted ${t.keyShift > 0 ? "+" : ""}${t.keyShift} st to mix in key` : ""} · bars ${t.inBar}–${t.outBar} · ${fmt(t.estSec)}${t.trans.kind !== "start" ? ` · in by ${t.trans.kind.replace("_", " ")}` : ""}${t.fx.length ? ` · ${t.fx.length} FX: ${t.fx.map((f) => f.fx.split(":")[0]).join(", ")}` : ""}`,
+              value: `${t.genreLabel || "?"} · ${t.bpm.toFixed(1)} BPM${t.rate !== 1 ? ` → ${(t.bpm * t.rate).toFixed(1)}` : ""} · ${t.camelot}${t.keyShift ? ` → shifted ${t.keyShift > 0 ? "+" : ""}${t.keyShift} st to mix in key` : ""} · bars ${t.inBar}–${t.outBar} · ${fmt(t.estSec)}${t.trans.kind !== "start" ? ` · in by ${t.trans.kind.replace("_", " ")}` : ""}${t.fx.length ? ` · ${t.fx.length} FX: ${t.fx.map((f) => f.fx.split(":")[0]).join(", ")}` : ""}${(t.layers ?? []).map((l) => ` · ⟲ bars ${l.fromBar}–${l.toBar}: ${l.reason}`).join("")}`,
             })}
           >
             <span className="truncate text-[11px] font-medium text-foreground">{t.title}</span>
             <span className="flex items-center gap-1 truncate font-mono text-[9.5px] text-muted-foreground">
               {(t.bpm * t.rate).toFixed(0)} · {t.camelot}
               {t.keyShift ? <span className="text-accent"> {t.keyShift > 0 ? "+" : ""}{t.keyShift}st</span> : null}
+              {t.layers?.length ? <span className="text-[var(--violet)]">⟲{t.layers.length}</span> : null}
               {t.trans.kind !== "start" && (
                 <span
                   className={cn(
@@ -289,6 +290,20 @@ function Timeline({ tracks, current }: { tracks: SetTrack[]; current: number }) 
                 </span>
               )}
             </span>
+            {(t.layers ?? []).map((l, k) => {
+              // Where the loop rides this track, along the clip.
+              const span = Math.max(1, (tracks[i + 1]?.trans.enterAt ?? t.outBar) - t.inBar);
+              const x = Math.min(1, Math.max(0, (l.fromBar - t.inBar) / span));
+              const w = Math.min(1 - x, (l.toBar - l.fromBar) / span);
+              return (
+                <span
+                  key={k}
+                  aria-hidden
+                  className="absolute h-1 rounded-[1px]"
+                  style={{ left: `${x * 100}%`, width: `${w * 100}%`, top: k ? 5 : 0, background: l.part === "vocal" ? "var(--violet)" : "var(--warm)" }}
+                />
+              );
+            })}
             <span aria-hidden className="absolute inset-x-0 bottom-0 h-0.5" style={{ background: `linear-gradient(90deg, transparent, ${deck} ${t.energy * 100}%, transparent ${t.energy * 100}%)` }} />
           </div>
         );

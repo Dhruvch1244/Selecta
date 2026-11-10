@@ -168,6 +168,9 @@ pub struct SetTrack {
     /// Semitones to shift this track's key (keylock on): -2..=2, 0 = as recorded.
     #[serde(default)]
     pub key_shift: i32,
+    /// Loops of other songs riding this one on the extra decks (see layers.rs).
+    #[serde(default)]
+    pub layers: Vec<crate::layers::Layer>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -700,6 +703,27 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     // 3. Script.
     let mut out = script(&seq, intent, None, opts.keylock, cur.map(|c| &c.moves), &mut rng);
     let total = finish(&mut out, &seq, intent, &mut rng);
+    // 4. Layers: loops of other songs over these, on the extra decks. Tools
+    // are tracks outside the set that still fit the prompt.
+    let in_set: Vec<&str> = seq.iter().map(|w| w.c.track.id.as_str()).collect();
+    let set_songs: Vec<_> = seq.iter().filter_map(|w| song_key(&w.c.track.artist, &w.c.track.title)).collect();
+    let mut tools: Vec<(&Candidate, f64)> = scored
+        .iter()
+        .filter(|(c, f)| *f >= 0.3 && !in_set.contains(&c.track.id.as_str()))
+        .filter(|(c, _)| song_key(&c.track.artist, &c.track.title).is_none_or(|k| !set_songs.contains(&k)))
+        .take(40)
+        .cloned()
+        .collect();
+    // Whatever the curator asked to loop is a source, however it scored.
+    for l in cur.map(|c| c.layers.as_slice()).unwrap_or(&[]) {
+        if !in_set.contains(&l.src.as_str()) && !tools.iter().any(|(c, _)| c.track.id == l.src) {
+            if let Some(c) = library.iter().find(|c| c.track.id == l.src) {
+                tools.push((c, 1.0));
+            }
+        }
+    }
+    let hosts: Vec<&Candidate> = seq.iter().map(|w| w.c).collect();
+    notes.extend(crate::layers::place(&mut out, &hosts, &tools, intent, cur.map(|c| c.layers.as_slice()).unwrap_or(&[]), &mut rng));
     let len = out.len();
     let created = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     Ok(SetPlan {
@@ -716,7 +740,7 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     })
 }
 
-fn phrases(a: &Analysis, lo: u32, hi: u32) -> Vec<u32> {
+pub(crate) fn phrases(a: &Analysis, lo: u32, hi: u32) -> Vec<u32> {
     let mut v: Vec<u32> = (a.start_bar..a.bars).step_by(8).filter(|b| (lo..=hi).contains(b)).collect();
     v.extend(a.sections.iter().map(|s| s.start).filter(|b| (lo..=hi).contains(b)));
     v.sort_unstable();
@@ -780,7 +804,7 @@ fn choose_out(w: &Work, in_bar: u32, rate: f64, overlap: u32) -> u32 {
 }
 
 /// Mean vocal presence of a track over bars [lo, hi) (0 without a stem).
-fn vox(c: &Candidate, lo: u32, hi: u32) -> f64 {
+pub(crate) fn vox(c: &Candidate, lo: u32, hi: u32) -> f64 {
     let Some(v) = &c.vocals else { return 0.0 };
     let (lo, hi) = (lo as usize, (hi as usize).min(v.len()));
     if hi <= lo {
@@ -792,7 +816,7 @@ fn vox(c: &Candidate, lo: u32, hi: u32) -> f64 {
 /// The track's strongest sung hook: a phrase-aligned 8-bar window (else 4)
 /// past the intro, where the vocal is present almost throughout. Loops of
 /// it ride another track in sync, the way a DJ loops an acapella.
-fn vocal_hook(c: &Candidate) -> Option<(u32, u32)> {
+pub(crate) fn vocal_hook(c: &Candidate) -> Option<(u32, u32)> {
     let a = &c.analysis;
     c.vocals.as_ref()?;
     for len in [8u32, 4] {
@@ -1061,6 +1085,7 @@ fn script(
             est_sec: 0.0,
             fx: vec![],
             key_shift: 0,
+            layers: vec![],
         };
         if i == 0 {
             // A locked-in first track keeps its cue, rate and entry; only its exit is re-planned.
@@ -1515,6 +1540,7 @@ mod tests {
             moments: vec!["Solar: rewind the drop".into()],
             // A move any pair supports, and one these synthetic tracks can't (no stems).
             moves: [(id("Come Alive"), "echo_out".to_string()), (id("Solar"), "bootleg".to_string())].into_iter().collect(),
+            layers: vec![],
         };
         let p = plan(&it, &lib, &Options { seed: 5, exclude: vec![], curation: Some(cur), keylock: false }).unwrap();
         assert!(p.curated);
@@ -1528,6 +1554,79 @@ mod tests {
         assert_eq!(titles, ["Liquid Sky", "Watercolour", "Come Alive", "Solar"]);
         assert_eq!(p.tracks[2].trans.kind, TransitionKind::EchoOut, "a feasible suggested move is used");
         assert_ne!(p.tracks[3].trans.kind, TransitionKind::Bootleg, "an infeasible one (no stems) is not");
+    }
+
+    /// The DnB part of the test library with confident, shared keys, so riffs can layer.
+    fn dnb_keyed() -> Vec<Candidate> {
+        let mut lib: Vec<Candidate> = library().into_iter().filter(|c| c.track.genre_tag == "Drum & Bass").collect();
+        for c in lib.iter_mut() {
+            c.analysis.camelot = "8A".into();
+            c.analysis.key_conf = 0.9;
+        }
+        lib
+    }
+
+    #[test]
+    fn layer_tempo_and_key_fits() {
+        use crate::layers::{fit_tempo, LayerPart};
+        assert!(fit_tempo(172.0, 174.0, LayerPart::Riff).is_some());
+        assert!(fit_tempo(128.0, 174.0, LayerPart::Riff).is_none(), "a house riff can't ride DnB");
+        let (m, r) = fit_tempo(87.0, 174.0, LayerPart::Vocal).unwrap();
+        assert_eq!(m, 2.0, "a hip-hop vocal sits half-time over DnB");
+        assert!((r - 1.0).abs() < 1e-9);
+        assert!(fit_tempo(87.0, 174.0, LayerPart::Riff).is_none(), "riffs don't go half-time");
+    }
+
+    #[test]
+    fn layers_ride_solo_bars_and_recur_without_neighbours() {
+        let lib = dnb_keyed();
+        let mut it = intent::parse("crazy dnb mashup 20 min", &[]);
+        it.chaos = 0.9;
+        it.mashups = 0.9;
+        let p = plan(&it, &lib, &Options { seed: 3, exclude: vec![], curation: None, keylock: true }).unwrap();
+        let total: usize = p.tracks.iter().map(|t| t.layers.len()).sum();
+        assert!(total >= 1, "a chaotic mashup set should layer something: {:?}", p.notes);
+        let mut uses: std::collections::HashMap<&str, Vec<usize>> = Default::default();
+        for (i, t) in p.tracks.iter().enumerate() {
+            let (lo, hi) = crate::layers::solo_range(&p.tracks, i);
+            for l in &t.layers {
+                assert_ne!(l.id, t.id, "a track never layers over itself");
+                assert!(l.from_bar >= lo && l.to_bar <= hi, "layer {}-{} outside solo bars {lo}-{hi} of {}", l.from_bar, l.to_bar, t.title);
+                assert!(l.to_bar > l.from_bar && l.src_bars == 4);
+                uses.entry(l.id.as_str()).or_default().push(i);
+            }
+        }
+        for (src, hosts) in uses {
+            assert!(hosts.len() <= 3, "{src} layered {} times", hosts.len());
+            for w in hosts.windows(2) {
+                assert!(w[1] >= w[0] + 2, "{src} on neighbouring tracks {w:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ai_layer_requests_are_used_even_from_outside_the_set() {
+        let lib = dnb_keyed();
+        let it = intent::parse("dnb set 8 min", &[]);
+        let id = |t: &str| lib.iter().find(|c| c.track.title == t).unwrap().track.id.clone();
+        let order = vec![id("Liquid Sky"), id("Watercolour"), id("Come Alive")];
+        let cur = crate::llm::Curation {
+            scores: order.iter().map(|i| (i.clone(), 9.0)).collect(),
+            order: order.clone(),
+            // Solar is not in the set: a tool loop over two picks.
+            layers: vec![crate::layers::AiLayer {
+                src: id("Solar"),
+                over: vec![order[0].clone(), order[2].clone()],
+                part: Some(crate::layers::LayerPart::Riff),
+            }],
+            ..Default::default()
+        };
+        let p = plan(&it, &lib, &Options { seed: 1, exclude: vec![], curation: Some(cur), keylock: true }).unwrap();
+        assert!(p.tracks.iter().all(|t| t.title != "Solar"));
+        let tool: Vec<_> =
+            p.tracks.iter().flat_map(|t| t.layers.iter().map(move |l| (t.title.as_str(), l))).filter(|(_, l)| l.title == "Solar").collect();
+        assert!(!tool.is_empty(), "the requested tool loop should be layered: {:?}", p.notes);
+        assert!(tool.iter().all(|(_, l)| l.part == crate::layers::LayerPart::Riff));
     }
 
     #[test]

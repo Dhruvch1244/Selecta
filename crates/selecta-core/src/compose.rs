@@ -50,7 +50,12 @@ pub fn build_set(
             ));
             match llm::curate(ai, it, &wide, need) {
                 Ok(c) => {
-                    say(&format!("Claude placed {} songs and chose {} transitions", c.order.len(), c.moves.len()));
+                    say(&format!(
+                        "Claude placed {} songs, chose {} transitions and asked for {} layered loops",
+                        c.order.len(),
+                        c.moves.len(),
+                        c.layers.iter().map(|l| l.over.len()).sum::<usize>()
+                    ));
                     curation = Some(c);
                 }
                 Err(e) => notes.push(format!("AI curation unavailable ({e}); planned by rules.")),

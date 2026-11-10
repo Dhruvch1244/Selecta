@@ -2,8 +2,8 @@
 // Kept apart from the deck store so manual DJing and set playback stay
 // independent; while a set plays the conductor owns both decks.
 
-import { Conductor, type ConductorEvent, type DeckId } from "@selecta/engine";
-import type { SetPlan, SetSummary } from "@selecta/protocol";
+import { Conductor, type ConductorEvent, type DeckId, type LayerDeckId } from "@selecta/engine";
+import type { Layer, SetPlan, SetSummary } from "@selecta/protocol";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, type PlanOptions } from "./api";
@@ -21,6 +21,8 @@ interface SetState {
   playing: boolean;
   index: number;
   leadDeck: DeckId | null;
+  /** What each loop deck is layering right now (cleared by the strip when it ends). */
+  layers: Partial<Record<LayerDeckId, { layer: Layer; host: number }>>;
   recent: SetSummary[];
   error: string | null;
   build: (prompt: string, opts: PlanOptions, reroll?: boolean) => Promise<void>;
@@ -51,6 +53,10 @@ export const useSet = create<SetState>((set, get) => {
     } else if (e.type === "fx") {
       const label = e.fx.replace(":", " ").replace(/_/g, " ");
       status(`✦ ${label}: ${e.reason}`);
+    } else if (e.type === "layer") {
+      set({ layers: { ...get().layers, [e.deck]: { layer: e.layer, host: e.index } } });
+      const what = e.layer.part === "vocal" ? "vocal hook" : "riff";
+      status(`⟲ ${e.layer.kind}: ${e.layer.title} ${what} on deck ${e.deck}`);
     } else if (e.type === "postponed") status("Next track still decoding; holding this one for another phrase.");
     else if (e.type === "end") {
       set({ playing: false, leadDeck: null });
@@ -75,6 +81,7 @@ export const useSet = create<SetState>((set, get) => {
     playing: false,
     index: 0,
     leadDeck: null,
+    layers: {},
     recent: [],
     error: null,
 

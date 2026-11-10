@@ -1,5 +1,5 @@
 export { Engine } from "./engine";
-export { Deck, EQ_KILL_DB, type Band, type DeckId, type LoadedTrack, type Stem } from "./deck";
+export { Deck, EQ_KILL_DB, type Band, type DeckId, type LayerDeckId, type LoadedTrack, type Stem } from "./deck";
 export { alignLag, buildStemChannels, stemBuffer } from "./stems";
 export * from "./grid";
 export * from "./meter";
@@ -11,3 +11,4 @@ export { loadLimiter } from "./engine";
 export { dbToGain } from "./deck";
 export { fire, FAMILIES, type FxContext, type FireOptions } from "./fx";
 export { keylockSemitones, shiftPitch } from "./keylock";
+export { BOOST_PEAK_CEIL_DB, measureLoudness, normGain, TARGET_LUFS } from "./loudness";

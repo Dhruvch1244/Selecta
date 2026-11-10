@@ -93,11 +93,23 @@ async function runAutoplayIfAsked() {
   if (!plan) return void invoke("self_test_report", { lines: [], ok: false });
   log(`title: ${plan.title} | vibe: ${plan.intent.vibe ?? ""}`);
   plan.tracks.forEach((t, i) => log(`plan ${i}: ${t.trans.kind}${t.trans.loopFrom != null ? " (hook loop)" : ""} ${t.artist} - ${t.title} rate ${t.rate.toFixed(3)} keyShift ${t.keyShift} in ${t.inBar}`));
+  plan.tracks.forEach((t, i) =>
+    t.layers?.forEach((l) => log(`plan ${i} layer: ${l.kind} ${l.part} ${l.artist} - ${l.title} src ${l.srcBar}+${l.srcBars} over bars ${l.fromBar}-${l.toBar} x${l.beatRatio} keyShift ${l.keyShift}`)),
+  );
   plan.notes.forEach((n) => log(`note: ${n}`));
   const t0 = performance.now();
   await useSet.getState().play();
   log(`playing; latency ${getEngine().latencyMs} ms`);
-  while (performance.now() - t0 < minutes * 60000 && useSet.getState().playing) await new Promise((r) => setTimeout(r, 1000));
+  while (performance.now() - t0 < minutes * 60000 && useSet.getState().playing) {
+    await new Promise((r) => setTimeout(r, 1000));
+    // Loop decks: proof a layer is really sounding, and what the host does meanwhile.
+    const e = getEngine();
+    const live = e.layers.filter((d) => d.playing);
+    if (live.length) {
+      const host = Object.values(e.decks).find((d) => d.playing);
+      log(`layers: ${live.map((d) => `${d.id} ${d.meter.rmsDb.toFixed(1)} dB`).join(", ")} | host ${host?.id ?? "-"} ${host?.meter.rmsDb.toFixed(1) ?? ""} dB bar ${host ? Math.floor(host.bar()) : ""}`);
+    }
+  }
   useSet.getState().stop();
   log("autoplay done");
   await invoke("self_test_report", { lines: [], ok: true });

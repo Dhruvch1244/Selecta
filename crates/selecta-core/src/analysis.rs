@@ -31,7 +31,15 @@ const BINS: usize = NFFT / 2 + 1;
 const ONSET_LAG: f64 = 0.039;
 /// Bump when analysis output changes; stored tracks with an older version are re-analysed.
 /// 2: peak-aware gain (`peak_db`), soft genre tempo prior.
-pub const ANALYSIS_VERSION: u32 = 3;
+pub const ANALYSIS_VERSION: u32 = 4;
+
+/// Loudness every track's loud parts are brought to (LUFS, short-term 3 s,
+/// 90th percentile). Measured on the real library: lossy files overshoot
+/// 0 dBFS, so the old peak-capped RMS gain left drops 11 dB apart.
+pub const TARGET_LUFS: f64 = -10.0;
+/// How far a boost may push a track's sample peak past 0 dBFS; the master's
+/// lookahead limiter takes the rest cleanly.
+const BOOST_PEAK_CEIL_DB: f64 = 3.0;
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -76,8 +84,11 @@ pub struct Analysis {
     pub breaks: Vec<u32>,
     pub outro_bar: u32,
     pub bar_energy: Vec<f32>,
-    /// Playback gain to normalise loudness, capped so the track's peak stays under -1 dBFS.
+    /// Playback gain bringing the loud parts to `TARGET_LUFS`.
     pub gain_db: f64,
+    /// Short-term (3 s) BS.1770 loudness of the track's loud parts (90th percentile), LUFS.
+    #[serde(default)]
+    pub loudness: f64,
     /// Sample peak of the decoded audio, dBFS.
     pub peak_db: f64,
     pub centroid: f64,
@@ -102,6 +113,61 @@ impl Spectrum {
     fn bin_of(&self, hz: f64) -> usize {
         ((hz * NFFT as f64 / self.rate) as usize).min(BINS - 1)
     }
+}
+
+/// Gain that brings the loud parts to `TARGET_LUFS`, boosting no further than
+/// a peak of `BOOST_PEAK_CEIL_DB`.
+pub fn norm_gain(loudness: f64, peak_db: f64) -> f64 {
+    let want = TARGET_LUFS - loudness;
+    // Cutting is always fine; only a boost is limited by the peak.
+    if want <= 0.0 {
+        want.max(-15.0)
+    } else {
+        want.min((BOOST_PEAK_CEIL_DB - peak_db).max(0.0)).min(15.0)
+    }
+}
+
+/// RBJ biquad, direct form I, in place (the two ITU-R BS.1770 K-weighting stages).
+fn biquad(x: &mut [f64], b: [f64; 3], a: [f64; 3]) {
+    let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+    for v in x.iter_mut() {
+        let y = (b[0] * *v + b[1] * x1 + b[2] * x2 - a[1] * y1 - a[2] * y2) / a[0];
+        x2 = x1;
+        x1 = *v;
+        y2 = y1;
+        y1 = y;
+        *v = y;
+    }
+}
+
+/// BS.1770 short-term loudness (3 s windows, 1 s hop) of a mono downmix,
+/// expressed as the equivalent stereo LUFS; the 90th percentile of the
+/// non-silent windows, so quiet intros and breakdowns don't count.
+pub fn loud_parts_lufs(x: &[f32], rate: f64) -> f64 {
+    let mut y: Vec<f64> = x.iter().map(|v| *v as f64).collect();
+    let (g, q, fc) = (4.0f64, std::f64::consts::FRAC_1_SQRT_2, 1500.0);
+    let a = 10f64.powf(g / 40.0);
+    let w = 2.0 * std::f64::consts::PI * fc / rate;
+    let (c, al) = (w.cos(), w.sin() / (2.0 * q));
+    let sa = 2.0 * a.sqrt() * al;
+    biquad(
+        &mut y,
+        [a * ((a + 1.0) + (a - 1.0) * c + sa), -2.0 * a * ((a - 1.0) + (a + 1.0) * c), a * ((a + 1.0) + (a - 1.0) * c - sa)],
+        [(a + 1.0) - (a - 1.0) * c + sa, 2.0 * ((a - 1.0) - (a + 1.0) * c), (a + 1.0) - (a - 1.0) * c - sa],
+    );
+    let w = 2.0 * std::f64::consts::PI * 38.0 / rate;
+    let (c, al) = (w.cos(), w.sin() / (2.0 * 0.5));
+    biquad(&mut y, [(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + al, -2.0 * c, 1.0 - al]);
+    let hop = rate as usize;
+    let blocks: Vec<f64> = y.chunks(hop.max(1)).map(|b| b.iter().map(|v| v * v).sum::<f64>() / b.len() as f64).collect();
+    // Mono summed to two identical channels reads +3.01 dB in BS.1770.
+    let mut st: Vec<f64> =
+        blocks.windows(3).map(|w| -0.691 + 10.0 * ((w[0] + w[1] + w[2]) / 3.0 + 1e-12).log10() + 3.0103).filter(|l| *l > -60.0).collect();
+    if st.is_empty() {
+        return -60.0;
+    }
+    st.sort_by(|a, b| a.total_cmp(b));
+    st[((st.len() - 1) as f64 * 0.9).round() as usize]
 }
 
 fn stft(x: &[f32], rate: u32) -> Spectrum {
@@ -569,12 +635,9 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
         breaks.iter().rev().find(|b| **b as f64 > nb as f64 * 0.6).copied().unwrap_or((nb.saturating_sub(16)).max(start_bar) as u32);
 
     let (key_name, camelot, key_conf) = key(&sp);
-    let sig_rms_db = 20.0 * ((x.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt() + 1e-9).log10();
-    // Loudness target -11 dB RMS, but never boost a track's peaks past -1 dBFS:
-    // an uncapped +9 dB on a quiet, dynamic recording drove the master limiter
-    // into audible pumping. Quiet tracks end up a little quieter instead.
     let peak_db = 20.0 * (x.iter().fold(0f32, |m, v| m.max(v.abs())) as f64 + 1e-9).log10();
-    let gain_db = (-11.0 - sig_rms_db).min(-1.0 - peak_db).clamp(-9.0, 9.0);
+    let loudness = loud_parts_lufs(x, rate as f64);
+    let gain_db = norm_gain(loudness, peak_db);
 
     let mut spec_mean = vec![0f64; BINS];
     for f in 0..nfr {
@@ -607,6 +670,7 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
         outro_bar,
         bar_energy: bar_energy.iter().map(|v| (v * 1000.0).round() / 1000.0).collect(),
         gain_db,
+        loudness,
         peak_db,
         centroid,
         onset_rate,
@@ -731,12 +795,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn gain_never_pushes_peaks_over_minus_one_dbfs() {
-        let mut pcm = synth(124.0, 0.5, &LAYOUT, 22_050, 3);
-        pcm.samples.iter_mut().for_each(|v| *v *= 0.05); // very quiet master
-        let a = analyze_pcm(&pcm, None);
-        assert!(a.peak_db + a.gain_db <= -0.99, "peak {} + gain {} would clip", a.peak_db, a.gain_db);
-        assert!(a.gain_db > 0.0, "a quiet track should still be lifted");
+    fn loudness_matches_bs1770_on_a_sine() {
+        // A 997 Hz sine at -20 dBFS on both channels reads -20 LUFS.
+        let rate = 22_050.0;
+        let x: Vec<f32> = (0..(rate as usize * 10)).map(|i| 0.1 * (std::f64::consts::TAU * 997.0 * i as f64 / rate).sin() as f32).collect();
+        let l = loud_parts_lufs(&x, rate);
+        assert!((l + 20.0).abs() < 0.25, "{l} LUFS");
+    }
+
+    #[test]
+    fn gain_brings_quiet_and_loud_masters_to_the_target() {
+        let mut quiet = synth(124.0, 0.5, &LAYOUT, 22_050, 3);
+        quiet.samples.iter_mut().for_each(|v| *v *= 0.5);
+        let q = analyze_pcm(&quiet, None);
+        // Lifted to the target, or as far as the peak ceiling allows.
+        let at_target = (q.loudness + q.gain_db - TARGET_LUFS).abs() < 0.1;
+        let at_ceiling = (q.peak_db + q.gain_db - BOOST_PEAK_CEIL_DB).abs() < 0.1;
+        assert!(q.gain_db > 5.0 && (at_target || at_ceiling), "quiet: {} + {} (peak {})", q.loudness, q.gain_db, q.peak_db);
+        assert!(q.peak_db + q.gain_db <= BOOST_PEAK_CEIL_DB + 1e-9);
+        // A hot master is cut, never limited by its peak.
+        assert!((norm_gain(-5.0, 2.5) - (TARGET_LUFS + 5.0)).abs() < 1e-9);
+        // A boost stops where the peak would pass the ceiling.
+        assert!((norm_gain(-16.0, 0.0) - BOOST_PEAK_CEIL_DB).abs() < 1e-9);
     }
 
     #[test]

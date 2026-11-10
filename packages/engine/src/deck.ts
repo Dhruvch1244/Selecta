@@ -9,6 +9,8 @@ import { computeWaveform, type Waveform } from "./waveform";
 import type { Move, Target } from "./schedule";
 
 export type DeckId = "A" | "B";
+/** The loop decks that layer other songs over A/B (see conductor layers). */
+export type LayerDeckId = "C" | "D";
 export type Band = "low" | "mid" | "high";
 
 export interface LoadedTrack {
@@ -29,7 +31,7 @@ export const dbToGain = (db: number): number => (db <= EQ_KILL_DB ? 0 : Math.pow
 export const EQ_KILL_DB = -40;
 
 export class Deck {
-  readonly id: DeckId;
+  readonly id: DeckId | LayerDeckId;
   track: LoadedTrack | null = null;
   wave: Waveform | null = null;
   meter: MeterState = newMeter();
@@ -65,7 +67,7 @@ export class Deck {
   private readonly analyser: AnalyserNode;
   private readonly meterBuf: Float32Array<ArrayBuffer>;
 
-  constructor(ctx: BaseAudioContext, id: DeckId, out: AudioNode) {
+  constructor(ctx: BaseAudioContext, id: DeckId | LayerDeckId, out: AudioNode) {
     this.ctx = ctx;
     this.id = id;
     this.vca = ctx.createGain();
@@ -179,6 +181,10 @@ export class Deck {
   /** Context time being heard now (the engine accounts for output latency); visuals use it. */
   heardTime: () => number = () => this.ctx.currentTime;
 
+  /** Context time playback stops (Infinity while nothing is scheduled). */
+  get stopsAt(): number {
+    return this.stoppedAt;
+  }
   /** Has a source with no stop scheduled: playing, or scheduled to start. */
   get armed(): boolean {
     return this.src !== null && this.stoppedAt === Infinity;
@@ -445,6 +451,41 @@ export class Deck {
     this.ov = { t0: at, t1: Infinity, posFn: (tt) => a + (((tt - at) * rate) % len) };
     this.busyUntil = Infinity;
     return true;
+  }
+
+  /**
+   * Play `len` seconds of the track from `a` as a seamless native loop,
+   * from context time `at` until `until` (a layer deck riding another
+   * deck's grid). The position reads as the loop playhead.
+   */
+  playLoop(at: number, a: number, len: number, until: number): void {
+    const t = this.track;
+    if (!t) return;
+    this.stop();
+    const when = Math.max(at, this.ctx.currentTime);
+    const s = this.source(t.buffer);
+    s.loop = true;
+    s.loopStart = a;
+    s.loopEnd = a + len;
+    this.vca.gain.cancelScheduledValues(when);
+    this.vca.gain.setValueAtTime(0, when);
+    this.vca.gain.linearRampToValueAtTime(1, when + DECLICK);
+    // Started from where the loop would be at `when` (late scheduling keeps phase).
+    s.start(when, a + (((when - at) * this.base.rate) % len));
+    s.onended = () => {
+      if (this.src === s) {
+        this.src = null;
+        this.stoppedAt = Math.min(this.stoppedAt, this.ctx.currentTime);
+      }
+    };
+    this.src = s;
+    this.stoppedAt = Infinity;
+    this.startAt = when;
+    const rate = this.base.rate;
+    this.base = { t: at, pos: a, rate };
+    this.loop = { a, len, beats: len / this.gridOrThrow().beat };
+    this.ov = { t0: at, t1: Infinity, posFn: (tt) => a + (((tt - at) * rate) % len) };
+    this.stop(until);
   }
 
   /** Jump `bars` (may be negative) on the next beat, keeping phase: the move every DJ uses to skip or repeat a phrase. */

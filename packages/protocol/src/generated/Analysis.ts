@@ -16,9 +16,13 @@ downbeat0: number,
  */
 gridConf: number, key: string, camelot: string, keyConf: number, bars: number, startBar: number, sections: Array<Section>, drops: Array<number>, breaks: Array<number>, outroBar: number, barEnergy: Array<number>, 
 /**
- * Playback gain to normalise loudness, capped so the track's peak stays under -1 dBFS.
+ * Playback gain bringing the loud parts to `TARGET_LUFS`.
  */
 gainDb: number, 
+/**
+ * Short-term (3 s) BS.1770 loudness of the track's loud parts (90th percentile), LUFS.
+ */
+loudness: number, 
 /**
  * Sample peak of the decoded audio, dBFS.
  */
