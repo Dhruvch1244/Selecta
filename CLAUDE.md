@@ -23,6 +23,7 @@ npm run protocol       # regenerate TS types from Rust (commit the result)
 cargo test --workspace
 cargo run --release -p selecta-core --example analyze -- FILE...   # analyse real files, prints JSON
 cargo run --release -p selecta-core --example grid_check -- FILE... # beat-grid error vs real kicks (ms), per third
+cargo run --release -p selecta-core --example loudness_check -- FILE... # analyser LUFS/peak/gain per file
 cargo run --release -p selecta-core --example plan_db -- COPY.db --keylock [--reanalyse] "PROMPT"...  # real plans
 SELECTA_SELFTEST=1 ./target/release/selecta-desktop                  # audio self-test inside the real webview
 ```
@@ -136,6 +137,16 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
 - **Duplicate songs:** a real library held 33 duplicate files out of 157 (an
   .opus rip and a tagged .m4a). The planner dedupes by `song_key`; without it
   sets played the same song twice.
+- **Loudness is measured on the playback buffer:** the old peak-capped RMS
+  gain left drops 11 dB apart (lossy files overshoot 0 dBFS, so the cap cut
+  them hard), and the analyser's mono ffmpeg downmix reads Opus ~3 dB hot.
+  `engine/loudness.ts` measures BS.1770 short-term loudness (90th
+  percentile) on the decoded stereo buffer at load and sets `gainDb` to reach
+  -10 LUFS; it matches pyloudnorm within 0.15 dB on the real library.
+- **Layers are events, not wallpaper:** a density of ~0.8 loops per track
+  turned a house set into riff-on-riff mud. `layers.rs` caps it at half the
+  tracks, keeps a motif off neighbouring tracks and at most 3 uses, and only
+  places loops in a track's solo bars (never during a transition).
 
 ## Dependencies
 

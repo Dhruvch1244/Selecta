@@ -6,8 +6,8 @@
 // PR's loop roll). Track audio is fetched through an injected `loadTrack`,
 // so this package never touches Tauri or the network itself.
 
-import type { SetPlan, SetTrack } from "@selecta/protocol";
-import type { Deck, DeckId, LoadedTrack } from "./deck";
+import type { Layer, SetPlan, SetTrack } from "@selecta/protocol";
+import { type Deck, type DeckId, EQ_KILL_DB, type LayerDeckId, type LoadedTrack } from "./deck";
 import type { Engine } from "./engine";
 import { matchRate, posOfBar } from "./grid";
 import { fire, type FxContext } from "./fx";
@@ -22,13 +22,26 @@ export type ConductorEvent =
   | { type: "transition"; index: number; deck: DeckId; kind: string; rate: number }
   | { type: "postponed"; index: number }
   | { type: "fx"; index: number; fx: string; reason: string }
+  | { type: "layer"; index: number; deck: LayerDeckId; layer: Layer }
   | { type: "end" }
   | { type: "error"; message: string };
 
 export interface ConductorHost {
-  loadTrack: (t: SetTrack) => Promise<LoadedTrack>;
+  /** Audio for a set track, or for a layer's source (only these four fields are set). */
+  loadTrack: (t: Pick<SetTrack, "id" | "path" | "artist" | "title">) => Promise<LoadedTrack>;
   onEvent?: (e: ConductorEvent) => void;
 }
+
+/** A layer's loop, rendered to the host's tempo and key, ready for a loop deck. */
+interface LayerAudio {
+  track: LoadedTrack;
+  /** Loop start and length in the rendered buffer (seconds). */
+  a: number;
+  len: number;
+}
+
+/** A/B deck id (conductor events about the main decks). */
+const ab = (d: Deck): DeckId => d.id as DeckId;
 
 interface Pending {
   out: Deck;
@@ -53,6 +66,10 @@ export class Conductor {
   keylock = false;
   /** Tracks whose audio failed to load: skipped when their turn comes. */
   private failed = new Set<SetTrack>();
+  /** Each track's layer loops, rendered while the track itself is prepared (null = unavailable). */
+  private layerAudio = new WeakMap<SetTrack, (LayerAudio | null | undefined)[]>();
+  /** Until when each loop deck is taken (a layer is booked a lookahead before it sounds). */
+  private layerBusy = new Map<Deck, number>();
 
   constructor(
     private readonly engine: Engine,
@@ -100,7 +117,7 @@ export class Conductor {
     deck.fader.gain.linearRampToValueAtTime(1, t + 1.5);
     deck.play(t, posOfBar(deck.grid!, first.inBar));
     this.live = deck;
-    this.host.onEvent?.({ type: "track", index: 0, deck: deck.id });
+    this.host.onEvent?.({ type: "track", index: 0, deck: ab(deck) });
     void this.prepare(1);
     this.timer = setInterval(() => this.tick(), TICK_MS);
   }
@@ -128,7 +145,8 @@ export class Conductor {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.pending = null;
-    for (const d of Object.values(this.engine.decks)) d.stop();
+    for (const d of [...Object.values(this.engine.decks), ...this.engine.layers]) d.stop();
+    this.layerBusy.clear();
   }
 
   /** Jump to the next track now: an echo-out on the next bar. */
@@ -150,6 +168,8 @@ export class Conductor {
     let p = this.loaded.get(i);
     if (!p) {
       p = this.host.loadTrack(t).then((track) => this.keylocked(t, track));
+      // Its layers' loops render alongside (a whole track ahead of use).
+      void p.then(() => this.prepareLayers(t)).catch(() => {});
       p.catch((e) => {
         this.failed.add(t);
         this.host.onEvent?.({ type: "error", message: `Couldn't load ${t.title}: ${e instanceof Error ? e.message : e}. Skipping it.` });
@@ -180,6 +200,101 @@ export class Conductor {
     }
   }
 
+  private prepareLayers(t: SetTrack): void {
+    if (!t.layers?.length || this.layerAudio.has(t)) return;
+    const slots: (LayerAudio | null | undefined)[] = t.layers.map(() => undefined);
+    this.layerAudio.set(t, slots);
+    // One at a time: renders share the CPU with decoding the next track.
+    void t.layers.reduce<Promise<void>>(
+      (chain, l, k) =>
+        chain.then(async () => {
+          try {
+            slots[k] = await this.renderLayer(t, l, await this.host.loadTrack(l));
+          } catch (e) {
+            console.warn(`layer ${l.title} unavailable:`, e);
+            slots[k] = null;
+          }
+        }),
+      Promise.resolve(),
+    );
+  }
+
+  /**
+   * Cut a layer's loop (plus a margin) out of its source and render it to
+   * the host's key: pitch-corrected for the rate it will play at, plus the
+   * planned key shift. Always rendered (keylock or not): a loop riding a
+   * track at the wrong pitch is a clash, not a tempo change.
+   */
+  private async renderLayer(host: SetTrack, l: Layer, src: LoadedTrack): Promise<LayerAudio | null> {
+    const g = { beat: src.analysis.beat, downbeat0: src.analysis.downbeat0 };
+    const a0 = posOfBar(g, l.srcBar);
+    const len = posOfBar(g, l.srcBar + l.srcBars) - a0;
+    const b = src.buffer;
+    if (l.part === "vocal" && b.numberOfChannels < 4) return null; // the vocal stem is the point
+    const pad = 0.5;
+    const s0 = Math.max(0, Math.floor((a0 - pad) * b.sampleRate));
+    const s1 = Math.min(b.length, Math.ceil((a0 + len + pad) * b.sampleRate));
+    if (s1 - s0 < len * b.sampleRate) return null;
+    const part = new AudioBuffer({ numberOfChannels: b.numberOfChannels, length: s1 - s0, sampleRate: b.sampleRate });
+    for (let c = 0; c < b.numberOfChannels; c++) part.copyToChannel(b.getChannelData(c).subarray(s0, s1), c);
+    const hostBeat = 60 / (host.bpm * host.rate);
+    const rate = src.analysis.beat / (l.beatRatio * hostBeat);
+    const buffer = await shiftPitch(part, keylockSemitones(rate, l.keyShift));
+    const a = a0 - s0 / b.sampleRate;
+    const bar = 4 * g.beat;
+    return { track: { ...src, buffer, analysis: { ...src.analysis, downbeat0: a - Math.floor(a / bar) * bar } }, a, len };
+  }
+
+  /**
+   * Start a layer on a free loop deck, phrase-locked to the host deck: its
+   * rate is taken from what the host is really doing, so it can't drift.
+   * Vocals come in through a quick high-pass sweep with the host's own
+   * vocal ducked; riffs slam in on the one with the host's bass swapped
+   * out. Both leave on an echo of their last beat.
+   */
+  private playLayer(index: number, host: Deck, l: Layer, audio: LayerAudio, t0: number, t1: number): void {
+    const now = this.engine.ctx.currentTime;
+    const d = this.engine.layers.find((x) => (this.layerBusy.get(x) ?? 0) <= Math.max(now, t0 - 0.01));
+    if (!d || !host.grid || t1 <= t0) return;
+    if (l.part === "vocal" && audio.track.buffer.numberOfChannels < 4) return;
+    this.layerBusy.set(d, t1 + 0.05);
+    const hostBeat = host.grid.beat / host.rate;
+    d.load(audio.track);
+    d.resetMix(now);
+    d.setRate(audio.track.analysis.beat / (l.beatRatio * hostBeat));
+    const vocal = l.part === "vocal";
+    const moves: Parameters<Deck["automate"]>[0] = [];
+    if (vocal) {
+      moves.push({ side: "in", target: "inst", at: t0, value: 0 });
+      moves.push({ side: "in", target: "hp", at: t0, value: 1800 }, { side: "in", target: "hp", at: t0, value: 120, until: t0 + hostBeat });
+      moves.push({ side: "in", target: "fader", at: t0, value: 0.9 });
+    } else {
+      if (d.hasStems) moves.push({ side: "in", target: "vox", at: t0, value: 0 });
+      // A riff rides the host, it doesn't replace it: measured in the app at
+      // full level the loop sat ~7 dB over the bass-swapped host.
+      moves.push({ side: "in", target: "high", at: t0, value: -6 }, { side: "in", target: "fader", at: t0, value: 0.6 });
+    }
+    d.automate(moves);
+    d.playLoop(t0, audio.a, audio.len, t1);
+    d.echo(t1 - hostBeat, t1, hostBeat * 0.75);
+    // The host makes room: its bass for a riff, its vocal for a vocal.
+    const hostMoves: Parameters<Deck["automate"]>[0] = vocal
+      ? host.hasStems
+        ? [
+            { side: "out", target: "vox", at: t0 - hostBeat, value: 1 },
+            { side: "out", target: "vox", at: t0 - hostBeat, value: 0.2, until: t0 },
+            { side: "out", target: "vox", at: t1, value: 0.2 },
+            { side: "out", target: "vox", at: t1, value: 1, until: t1 + hostBeat },
+          ]
+        : []
+      : [
+          { side: "out", target: "low", at: t0, value: EQ_KILL_DB },
+          { side: "out", target: "low", at: t1, value: 0 },
+        ];
+    host.automate(hostMoves);
+    this.host.onEvent?.({ type: "layer", index, deck: d.id as LayerDeckId, layer: l });
+  }
+
   private tick(): void {
     const plan = this.plan;
     const live = this.live;
@@ -190,7 +305,7 @@ export class Conductor {
       const p = this.pending;
       if (!p.handedOver && now >= p.sched.handoverAt) {
         p.handedOver = true;
-        this.host.onEvent?.({ type: "track", index: p.index, deck: p.inn.id });
+        this.host.onEvent?.({ type: "track", index: p.index, deck: ab(p.inn) });
       }
       if (now >= p.sched.outEndsAt + 0.1) {
         p.out.stop();
@@ -213,6 +328,21 @@ export class Conductor {
       this.fired.add(key);
       if (t < now - 0.05) return; // missed (e.g. after a seek): skip rather than fire late
       if (fire(this.fx, cue.fx, { deck: live, at: t, beats: cue.beats })) this.host.onEvent?.({ type: "fx", index: this.index, fx: cue.fx, reason: cue.reason });
+    });
+    // Layers: other songs' loops over this track, scheduled like its cues.
+    const audio = this.layerAudio.get(cur);
+    cur.layers?.forEach((l, k) => {
+      const key = `${this.index}:L${k}`;
+      if (this.fired.has(key)) return;
+      const t0 = live.timeOfBar(l.fromBar);
+      if (t0 - now > LOOKAHEAD) return;
+      this.fired.add(key);
+      const got = audio?.[k];
+      if (t0 < now - 0.05 || !got) {
+        if (got === undefined) this.host.onEvent?.({ type: "error", message: `${l.title} loop wasn't ready in time; skipped it.` });
+        return;
+      }
+      this.playLayer(this.index, live, l, got, t0, live.timeOfBar(l.toBar));
     });
     const next = plan.tracks[this.index + 1];
     if (!next) {
@@ -329,7 +459,7 @@ export class Conductor {
     // ends: decoding, stems and the keylock render can take 10-35 s, and a
     // long mashup can end seconds before the next move is due.
     void this.prepare(index + 1).catch(() => {});
-    this.host.onEvent?.({ type: "transition", index, deck: inn.id, kind: trans.kind, rate });
+    this.host.onEvent?.({ type: "transition", index, deck: ab(inn), kind: trans.kind, rate });
   }
 
   /**

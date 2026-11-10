@@ -6,6 +6,7 @@ import { startNowPlaying } from "@/lib/now-playing";
 import { getEngine, useApp } from "@/lib/store";
 import { Browser } from "@/panels/browser";
 import { DeckLane } from "@/panels/deck-lane";
+import { LayerStrip } from "@/panels/layer-strip";
 import { Mixer } from "@/panels/mixer";
 import { SetPanel } from "@/panels/set-panel";
 import { FxPad } from "@/panels/fx-pad";
@@ -78,10 +79,11 @@ export function App() {
             <span className="font-display text-[11px] uppercase tracking-[0.25em] [writing-mode:vertical-rl]">Library ▸</span>
           </button>
         )}
-        <div className="grid min-h-0 grid-rows-[auto_minmax(120px,1fr)_minmax(120px,1fr)_auto] gap-1.5">
+        <div className="grid min-h-0 grid-rows-[auto_minmax(120px,1fr)_minmax(120px,1fr)_auto_auto] gap-1.5">
           <SetPanel />
           <DeckLane id="A" />
           <DeckLane id="B" />
+          <LayerStrip />
           <FxPad />
         </div>
         <Mixer />

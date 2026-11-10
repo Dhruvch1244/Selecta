@@ -8,6 +8,8 @@ import { type MeterState, newMeter, stepMeter } from "./meter";
 export class Engine {
   readonly ctx: AudioContext;
   readonly decks: Record<DeckId, Deck>;
+  /** Loop decks C and D: other songs' hooks and riffs layered over A/B. */
+  readonly layers: readonly [Deck, Deck];
   readonly limiterReady: Promise<void>;
   /** The limiter worklet is in the signal path (false: it failed to load and the mix runs unlimited). */
   limiterActive = false;
@@ -44,7 +46,8 @@ export class Engine {
     }).catch((e) => console.warn("limiter unavailable, running unlimited:", e));
     this.volume.connect(this.analyser);
     this.decks = { A: new Deck(ctx, "A", this.mix), B: new Deck(ctx, "B", this.mix) };
-    for (const d of Object.values(this.decks)) d.heardTime = () => this.heardTime();
+    this.layers = [new Deck(ctx, "C", this.mix), new Deck(ctx, "D", this.mix)];
+    for (const d of [...Object.values(this.decks), ...this.layers]) d.heardTime = () => this.heardTime();
   }
 
   /** Browsers start contexts suspended until a user gesture. */
@@ -66,6 +69,7 @@ export class Engine {
     this.master = stepMeter(this.master, this.buf, nowMs, dtMs);
     this.decks.A.tickMeter(nowMs, dtMs);
     this.decks.B.tickMeter(nowMs, dtMs);
+    for (const l of this.layers) l.tickMeter(nowMs, dtMs);
   }
 
   /**

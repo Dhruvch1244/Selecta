@@ -203,6 +203,8 @@ pub struct Curation {
     /// Incoming track id -> the transition the curator wants into it
     /// (a TransitionKind id). Used when the pair can support it.
     pub moves: BTreeMap<String, String>,
+    /// Loops the curator wants layered over other picks (see layers.rs).
+    pub layers: Vec<crate::layers::AiLayer>,
 }
 
 /// Facts the curator gets per track: enough to *place* songs, not just pick
@@ -255,9 +257,15 @@ pub fn curation_prompt(it: &Intent, wide: &[&Candidate], need: usize) -> String 
            16-32 bars: it needs a 'hook'), acapella_build (its vocal over the previous track's last phrase: it needs vocals%).\n\
          - any tempo: echo_out, slam, backspin, tape_stop, rewind, loop_roll (use the turntable ones sparingly).\n\
          Prefer beatmatched moves wherever tempos allow; vary the moves; harmonic keys (Camelot neighbours) mix best.\n\n\
+         You also have two extra loop decks. A layer loops a 4-bar piece of one song over another pick's drop or instrumental:\n\
+         part \"vocal\" (its sung hook, needs a 'hook') or \"riff\" (its drop's bassline/lead, the host's bass is swapped out;\n\
+         needs close BPM and key). The source can be an earlier pick (a callback), the next pick (a tease) or ANY library track,\n\
+         even one not in the set (a tool: e.g. one iconic bassline riding several drum & bass tracks). Repeating one signature\n\
+         loop over 2-3 picks, not neighbours, gives the set a motif. Suggest 0-6 layers that would make the set special.\n\n\
          Return ONLY JSON:\n\
          {{\"title\": \"catchy set name\", \"vibe\": \"one line\",\n\
           \"picks\": [{{\"n\": 12, \"score\": 9, \"role\": \"opener|builder|peak|closer\", \"move\": \"bootleg\"}}],\n\
+          \"layers\": [{{\"src\": 40, \"over\": [12, 25], \"part\": \"riff\"}}],\n\
           \"avoid\": [3, 7]}}\n\n\
          My library (n | artist | title | bpm | camelot key | energy 0-1 | vocals% | sung hook | drops at | length | genre | mood | language):\n{rows}",
         prompt = it.prompt,
@@ -290,6 +298,13 @@ pub fn parse_curation(v: &serde_json::Value, wide: &[&Candidate]) -> Curation {
             }
         }
         cur.scores.insert(id, score);
+    }
+    for l in v["layers"].as_array().into_iter().flatten().take(8) {
+        let Some(src) = id_of(&l["src"]) else { continue };
+        let over: Vec<String> = l["over"].as_array().into_iter().flatten().filter_map(id_of).filter(|h| *h != src).collect();
+        if !over.is_empty() {
+            cur.layers.push(crate::layers::AiLayer { src, over, part: l["part"].as_str().and_then(crate::layers::LayerPart::from_id) });
+        }
     }
     cur.avoid = v["avoid"].as_array().into_iter().flatten().filter_map(id_of).collect();
     for m in v["moments"].as_array().into_iter().flatten().take(5) {
@@ -345,6 +360,15 @@ pub fn liner_notes(cfg: &AiConfig, plan: &crate::planner::SetPlan) -> Result<Lin
                 t.trans.kind_label(),
                 if t.trans.loop_from.is_some() { " (looped vocal hook)" } else { "" },
             );
+            let row = t.layers.iter().fold(row, |r, l| {
+                format!(
+                    "{r} | layer: {} - {} {} looped over it ({:?})",
+                    l.artist,
+                    l.title,
+                    if l.part == crate::layers::LayerPart::Vocal { "vocal hook" } else { "riff, bass swapped" },
+                    l.kind
+                )
+            });
             at += t.est_sec;
             row
         })
@@ -355,7 +379,7 @@ pub fn liner_notes(cfg: &AiConfig, plan: &crate::planner::SetPlan) -> Result<Lin
          Write clean, final prose for a listener: no self-corrections, no ellipses, no internal reasoning, one idea per note.\n\
          Return ONLY JSON: {{\"title\": \"catchy set name\", \"vibe\": \"one or two sentences on the journey\",\n\
           \"moments\": [{{\"n\": <track number>, \"note\": \"what happens here and why it works\"}}]}} (3 to 6 moments).\n\n\
-         The set (n | starts at | track | tempo | key | transition into it):\n{}",
+         The set (n | starts at | track | tempo | key | transition into it | loops layered over it from other songs):\n{}",
         plan.prompt,
         rows.join("\n")
     );

@@ -3,7 +3,7 @@
 // buffer (see packages/engine/src/stems.ts); a missing or unreadable stem is
 // never an error, the track just plays without stem control.
 
-import { type LoadedTrack, stemBuffer } from "@selecta/engine";
+import { type LoadedTrack, measureLoudness, normGain, stemBuffer } from "@selecta/engine";
 import { api, readAudio } from "./api";
 import { getEngine } from "./store";
 
@@ -13,8 +13,11 @@ export async function loadTrackAudio(t: { id: string; path: string; artist: stri
     .trackVocals(t.id)
     .then((p) => (p ? readAudio(p) : null))
     .catch(() => null);
-  const [analysis, bytes] = await Promise.all([api.analysis(t.id), readAudio(t.path)]);
+  const [raw, bytes] = await Promise.all([api.analysis(t.id), readAudio(t.path)]);
   const [buffer, vb] = await Promise.all([eng.decode(bytes), vocalBytes]);
+  // Normalise on the audio that will actually play (see engine/loudness.ts).
+  const { lufs, peakDb } = measureLoudness(buffer);
+  const analysis = { ...raw, loudness: lufs, peakDb, gainDb: normGain(lufs, peakDb) };
   if (vb) {
     try {
       const vocals = await eng.decode(vb);
