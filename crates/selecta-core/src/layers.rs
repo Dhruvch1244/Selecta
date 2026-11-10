@@ -94,13 +94,14 @@ pub fn material(c: &Candidate, part: LayerPart) -> Option<(u32, u32)> {
             .copied()
             .find(|d| {
                 let e = &a.bar_energy;
-                let (lo, hi) = (*d as usize, (*d as usize + 4).min(e.len()));
-                *d + 8 < a.bars
+                // A whole 8-bar riff phrase: 4 bars was heard as "too short".
+                let (lo, hi) = (*d as usize, (*d as usize + 8).min(e.len()));
+                *d + 12 < a.bars
                     && hi > lo
                     && e[lo..hi].iter().sum::<f32>() / (hi - lo) as f32 >= 0.6
-                    && c.vocals.as_ref().is_none_or(|_| vox(c, *d, *d + 4) < 0.3)
+                    && c.vocals.as_ref().is_none_or(|_| vox(c, *d, *d + 8) < 0.3)
             })
-            .map(|d| (d, 4)),
+            .map(|d| (d, 8)),
     }
 }
 
@@ -207,11 +208,9 @@ pub fn place(
         let h = hosts[i];
         let ha = &h.analysis;
         let host_bpm = tracks[i].bpm * tracks[i].rate;
-        let len = if intent.chaos >= 0.55 && hi >= lo + 16 { 16 } else { 8 };
-        let starts: Vec<u32> = phrases(ha, lo, hi.saturating_sub(len)).into_iter().filter(|b| b + len <= hi).collect();
-        if starts.is_empty() {
-            continue;
-        }
+        let long = intent.chaos >= 0.55 && hi >= lo + 16;
+        // Window lengths: a riff plays its 8-bar phrase twice; vocals 8 or 16.
+        let len_for = |part: LayerPart| if part == LayerPart::Riff || long { 16 } else { 8 };
         for (si, (s, set_at, fit)) in srcs.iter().enumerate() {
             let kind = match set_at {
                 Some(j) if *j + 2 <= i => LayerKind::Callback,
@@ -225,6 +224,12 @@ pub fn place(
             for part in [LayerPart::Vocal, LayerPart::Riff] {
                 // A tease is the next track's voice, not its beat.
                 if kind == LayerKind::Tease && part == LayerPart::Riff {
+                    continue;
+                }
+                let len = len_for(part);
+                let starts: Vec<u32> = phrases(ha, lo, hi.saturating_sub(len)).into_iter().filter(|b| b + len <= hi).collect();
+                if starts.is_empty() {
+                    refuse(s, h, part, "its solo part is too short");
                     continue;
                 }
                 let Some(loop_at) = material(s, part) else {

@@ -270,9 +270,11 @@ export class Conductor {
       moves.push({ side: "in", target: "fader", at: t0, value: 0.9 });
     } else {
       if (d.hasStems) moves.push({ side: "in", target: "vox", at: t0, value: 0 });
-      // A riff rides the host, it doesn't replace it: measured in the app at
-      // full level the loop sat ~7 dB over the bass-swapped host.
-      moves.push({ side: "in", target: "high", at: t0, value: -6 }, { side: "in", target: "fader", at: t0, value: 0.6 });
+      // A riff is a bass swap: the loop brings its bass and mids, the host
+      // keeps its drums' top. The loop's own hats are cut (two sets of hats
+      // smeared the groove), and it sits under the host: at full level it
+      // measured ~7 dB over the bass-swapped host and buried it.
+      moves.push({ side: "in", target: "high", at: t0, value: EQ_KILL_DB }, { side: "in", target: "fader", at: t0, value: 0.7 });
     }
     d.automate(moves);
     d.playLoop(t0, audio.a, audio.len, t1);

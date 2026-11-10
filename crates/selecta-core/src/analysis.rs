@@ -31,7 +31,7 @@ const BINS: usize = NFFT / 2 + 1;
 const ONSET_LAG: f64 = 0.039;
 /// Bump when analysis output changes; stored tracks with an older version are re-analysed.
 /// 2: peak-aware gain (`peak_db`), soft genre tempo prior.
-pub const ANALYSIS_VERSION: u32 = 4;
+pub const ANALYSIS_VERSION: u32 = 5;
 
 /// Loudness every track's loud parts are brought to (LUFS, short-term 3 s,
 /// 90th percentile). Measured on the real library: lossy files overshoot
@@ -125,6 +125,102 @@ pub fn norm_gain(loudness: f64, peak_db: f64) -> f64 {
     } else {
         want.min((BOOST_PEAK_CEIL_DB - peak_db).max(0.0)).min(15.0)
     }
+}
+
+/// Sub-bass level (< ~150 Hz, dB) over each beat starting at `beats_t`.
+fn sub_db_per_beat(sp: &Spectrum, beats_t: &[f64], beat: f64, low_bins: usize) -> Vec<f64> {
+    let fps = sp.fps();
+    beats_t
+        .iter()
+        .map(|t| {
+            let a = ((t * fps) as usize).min(sp.frames.saturating_sub(1));
+            let b = (((t + beat) * fps) as usize).clamp(a + 1, sp.frames.max(a + 1));
+            let e: f64 =
+                (a..b.min(sp.frames)).map(|f| sp.row(f)[1..low_bins.max(2)].iter().map(|v| (*v as f64).powi(2)).sum::<f64>()).sum();
+            10.0 * (e / (b - a).max(1) as f64 + 1e-12).log10()
+        })
+        .collect()
+}
+
+/// Power mean of dB values, in dB.
+fn pmean_db(v: &[f64]) -> f64 {
+    10.0 * (v.iter().map(|d| 10f64.powf(d / 10.0)).sum::<f64>() / v.len().max(1) as f64 + 1e-12).log10()
+}
+
+/// How hard the bass returns at beat `i`: the next 2 bars' sub level over
+/// the median of the 2 bars before, when the sub also jumps >= 10 dB on
+/// that very beat (a pickup or a rhythmic bassline doesn't count).
+fn slam_at(sub: &[f64], full: f64, i: i64) -> f64 {
+    if i < 8 || i as usize + 8 > sub.len() {
+        return 0.0;
+    }
+    let i = i as usize;
+    // ...and it reaches the track's full bass level: a riser or snare roll
+    // coming out of a silent break jumps too, but stays well below it.
+    if sub[i] - sub[i - 1] < 10.0 || pmean_db(&sub[i..i + 8]) < full - 6.0 {
+        return 0.0;
+    }
+    let mut pre = sub[i - 8..i].to_vec();
+    pre.sort_by(|a, b| a.total_cmp(b));
+    pmean_db(&sub[i..i + 8]) - 0.5 * (pre[3] + pre[4])
+}
+
+/// Drops placed where the sub-bass actually slams back in, to the beat.
+/// Each energy drop moves to the hardest slam within 8 bars before to 4
+/// after it (full-band energy put DnB drops 4-8 bars late: the build is as
+/// loud as the drop); clear slams the energy curve missed are added. Also
+/// returns, per beat of the bar (0..4), how strongly the slams land there:
+/// they should land on the one, so a consistent other beat means the bar
+/// line is off by that much.
+fn refine_drops(drops: &[u32], sub: &[f64], first_beat: i64, energy: &[f32], start_bar: usize) -> (Vec<u32>, [f64; 4]) {
+    let nb = energy.len();
+    let mut votes = [0f64; 4];
+    let full = {
+        let mut v = sub.to_vec();
+        v.sort_by(|a, b| a.total_cmp(b));
+        v.get(v.len() * 4 / 5).copied().unwrap_or(0.0)
+    };
+    let loud = |b: usize| {
+        let e = &energy[b.min(nb)..(b + 8).min(nb)];
+        !e.is_empty() && e.iter().sum::<f32>() / e.len() as f32 >= 0.55
+    };
+    // A slam at beat `i` -> (bar, beat within bar); a slam a beat before the
+    // line counts as that bar's (an early bar line), as does one up to 2 after.
+    let place = |i: i64| -> (i64, usize) {
+        let k = (i - first_beat).rem_euclid(4) as usize;
+        let bar = (i - first_beat).div_euclid(4) + if k == 3 { 1 } else { 0 };
+        (bar, k)
+    };
+    let mut out: Vec<u32> = vec![];
+    for &d in drops {
+        let lo = first_beat + 4 * (d as i64 - 8).max(start_bar as i64);
+        let hi = first_beat + 4 * (d as i64 + 4);
+        let best = (lo..=hi).map(|i| (i, slam_at(sub, full, i))).filter(|(_, s)| *s >= 12.0).max_by(|a, b| a.1.total_cmp(&b.1));
+        match best {
+            Some((i, sc)) => {
+                let (bar, k) = place(i);
+                votes[k] += sc;
+                out.push(bar.max(0) as u32);
+            }
+            None => out.push(d),
+        }
+    }
+    for i in (first_beat + 4 * start_bar.max(2) as i64)..(first_beat + 4 * nb.saturating_sub(4) as i64) {
+        let sc = slam_at(sub, full, i);
+        let (bar, k) = place(i);
+        if sc >= 15.0 && bar >= 0 && loud(bar as usize) && out.iter().all(|d| (*d as i64 - bar).abs() >= 12) {
+            votes[k] += sc;
+            out.push(bar as u32);
+        }
+    }
+    out.sort_unstable();
+    let mut spaced: Vec<u32> = vec![];
+    for d in out {
+        if spaced.last().is_none_or(|l| d >= l + 16) {
+            spaced.push(d);
+        }
+    }
+    (spaced, votes)
 }
 
 /// RBJ biquad, direct form I, in place (the two ITU-R BS.1770 K-weighting stages).
@@ -585,6 +681,7 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
         (0..rms_at.len()).map(|i| if i == 0 { 0.0 } else { ((rms_at[i] + 1e-6).ln() - (rms_at[i - 1] + 1e-6).ln()).max(0.0) }).collect();
     let avg = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
     let (lm, rm) = (avg(&low_at), avg(&rise));
+    let sub = sub_db_per_beat(&sp, &beats_t, beat, low_bins);
     let dphase = (0..4)
         .map(|p| {
             let l: Vec<f64> = low_at.iter().skip(p).step_by(4).cloned().collect();
@@ -596,39 +693,60 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
         .unwrap_or(0);
     let first_down = beats_t.get(dphase).copied().unwrap_or(phase_t);
     let bar = 4.0 * beat;
-    let downbeat0 = first_down - (first_down / bar).floor() * bar;
+    let mut downbeat0 = first_down - (first_down / bar).floor() * bar;
 
-    // Per-bar features.
+    // Bar structure for a downbeat: features, energy, drops (snapped to where
+    // the sub-bass returns: in DnB the build is as loud as the drop, and the
+    // full-band curve put drops 4-8 bars late), breaks, sections.
     let hi_bin = sp.bin_of(4000.0);
-    let mut feats: Vec<[f64; 4]> = vec![];
-    let mut t = downbeat0;
-    while t < dur - bar * 0.5 {
-        let (a, b) = ((t * fps) as usize, (((t + bar) * fps) as usize).min(nfr));
-        let rows = if b > a { a..b } else { nfr.saturating_sub(2)..nfr };
-        let n = rows.len().max(1) as f64;
-        let (mut e, mut lo, mut hi) = (0f64, 0f64, 0f64);
-        for f in rows.clone() {
-            let r = sp.row(f);
-            e += r.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / BINS as f64;
-            lo += r[..low_bins * 2].iter().map(|v| *v as f64).sum::<f64>() / (low_bins * 2) as f64;
-            hi += r[hi_bin..].iter().map(|v| *v as f64).sum::<f64>() / (BINS - hi_bin) as f64;
+    let beat_idx = |db0: f64| ((db0 - phase_t) / beat).round() as i64;
+    let structure = |downbeat0: f64| {
+        let mut feats: Vec<[f64; 4]> = vec![];
+        let mut t = downbeat0;
+        while t < dur - bar * 0.5 {
+            let (a, b) = ((t * fps) as usize, (((t + bar) * fps) as usize).min(nfr));
+            let rows = if b > a { a..b } else { nfr.saturating_sub(2)..nfr };
+            let n = rows.len().max(1) as f64;
+            let (mut e, mut lo, mut hi) = (0f64, 0f64, 0f64);
+            for f in rows.clone() {
+                let r = sp.row(f);
+                e += r.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / BINS as f64;
+                lo += r[..low_bins * 2].iter().map(|v| *v as f64).sum::<f64>() / (low_bins * 2) as f64;
+                hi += r[hi_bin..].iter().map(|v| *v as f64).sum::<f64>() / (BINS - hi_bin) as f64;
+            }
+            let fl = if b > a { onset[a..b].iter().sum::<f64>() / (b - a) as f64 } else { 0.0 };
+            feats.push([10.0 * (e / n + 1e-18).log10(), 20.0 * (lo / n + 1e-9).log10(), 20.0 * (hi / n + 1e-9).log10(), fl]);
+            t += bar;
         }
-        let fl = if b > a { onset[a..b].iter().sum::<f64>() / (b - a) as f64 } else { 0.0 };
-        feats.push([10.0 * (e / n + 1e-18).log10(), 20.0 * (lo / n + 1e-9).log10(), 20.0 * (hi / n + 1e-9).log10(), fl]);
-        t += bar;
+        if feats.is_empty() {
+            feats.push([-90.0, -90.0, -90.0, 0.0]);
+        }
+        let rms_db: Vec<f32> = feats.iter().map(|f| f[0] as f32).collect();
+        let top = percentile(&rms_db, 95.0);
+        // 0..1 relative energy; 0 = 24 dB below the loud parts.
+        let rms_e: Vec<f32> = rms_db.iter().map(|d| ((d - (top - 24.0)) / 24.0).clamp(0.0, 1.0)).collect();
+        let fmax = feats.iter().map(|f| f[3]).fold(0.0, f64::max) + 1e-9;
+        let bar_energy: Vec<f32> =
+            rms_e.iter().zip(&feats).map(|(r, f)| (0.65 * r + 0.35 * (f[3] / fmax) as f32).clamp(0.0, 1.0)).collect();
+        let start_bar = rms_e.iter().position(|v| *v > 0.25).unwrap_or(0);
+        let (drops, breaks) = drops_breaks(&bar_energy, start_bar);
+        let (drops, votes) = refine_drops(&drops, &sub, beat_idx(downbeat0), &bar_energy, start_bar);
+        (feats, bar_energy, start_bar, drops, breaks, votes)
+    };
+    let (mut feats, mut bar_energy, mut start_bar, mut drops, mut breaks, votes) = structure(downbeat0);
+    // A drop slams on the "one". When the drops' bass consistently lands on
+    // another beat (measured: a DnB track whose drop hit on beat 2, so its
+    // double drops landed a beat off), the bar line is off by that much:
+    // move it and measure again.
+    let total: f64 = votes.iter().sum();
+    if let Some((k, w)) = votes.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)) {
+        if k != 0 && total > 0.0 && *w >= 0.6 * total && *w >= 25.0 {
+            let shift = if k == 3 { -1.0 } else { k as f64 };
+            downbeat0 = (downbeat0 + shift * beat).rem_euclid(bar);
+            (feats, bar_energy, start_bar, drops, breaks, _) = structure(downbeat0);
+        }
     }
-    let nb = feats.len().max(1);
-    if feats.is_empty() {
-        feats.push([-90.0, -90.0, -90.0, 0.0]);
-    }
-    let rms_db: Vec<f32> = feats.iter().map(|f| f[0] as f32).collect();
-    let top = percentile(&rms_db, 95.0);
-    // 0..1 relative energy; 0 = 24 dB below the loud parts.
-    let rms_e: Vec<f32> = rms_db.iter().map(|d| ((d - (top - 24.0)) / 24.0).clamp(0.0, 1.0)).collect();
-    let fmax = feats.iter().map(|f| f[3]).fold(0.0, f64::max) + 1e-9;
-    let bar_energy: Vec<f32> = rms_e.iter().zip(&feats).map(|(r, f)| (0.65 * r + 0.35 * (f[3] / fmax) as f32).clamp(0.0, 1.0)).collect();
-    let start_bar = rms_e.iter().position(|v| *v > 0.25).unwrap_or(0);
-    let (drops, breaks) = drops_breaks(&bar_energy, start_bar);
+    let nb = feats.len();
     let extra: Vec<u32> = drops.iter().chain(&breaks).cloned().collect();
     let secs = sections(&feats, &bar_energy, start_bar, &extra);
     let outro_bar =

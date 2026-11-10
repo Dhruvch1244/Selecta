@@ -143,6 +143,14 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
   `engine/loudness.ts` measures BS.1770 short-term loudness (90th
   percentile) on the decoded stereo buffer at load and sets `gainDb` to reach
   -10 LUFS; it matches pyloudnorm within 0.15 dB on the real library.
+- **Drops are where the sub-bass returns, not where it gets loud:** DnB
+  builds are as loud as their drops, so the full-band energy curve put 52%
+  of a real library's drops a bar or more off (double drops landed "4 bars
+  early, while the other is still building"). `refine_drops` snaps each
+  drop to the beat where the sub jumps back to full level after a bass-light
+  stretch, and shifts the bar line when the drops consistently slam on
+  another beat. Check with the slam offset per drop (68% on the bar line,
+  12% a bar off after the fix).
 - **Layers are events, not wallpaper:** a density of ~0.8 loops per track
   turned a house set into riff-on-riff mud. `layers.rs` caps it at half the
   tracks, keeps a motif off neighbouring tracks and at most 3 uses, and only

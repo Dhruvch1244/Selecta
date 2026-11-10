@@ -68,7 +68,7 @@ async function runSelfTestIfAsked() {
   await invoke("self_test_report", { lines: [], ok: results.every((x) => x.pass) });
 }
 
-/** `SELECTA_AUTOPLAY="prompt"`: rescan, plan by rules, play for N minutes, log events, exit. */
+/** `SELECTA_AUTOPLAY="prompt"` (or `"set:<saved set id>"`): rescan, plan by rules, play for N minutes, log events, exit. */
 async function runAutoplayIfAsked() {
   const { invoke } = await import("@tauri-apps/api/core");
   const cfg = await invoke<[string, number, boolean] | null>("autoplay_config").catch(() => null);
@@ -88,7 +88,9 @@ async function runAutoplayIfAsked() {
     if (!st.analysing && st.tracks.every((t) => t.analyzed || t.error)) break;
   }
   log(`library ready: ${useApp.getState().tracks.length} tracks`);
-  await useSet.getState().build(prompt, withAi ? {} : { noAi: true });
+  // "set:<id>" replays a saved set exactly (what the user heard), else plan the prompt.
+  if (prompt.startsWith("set:")) await useSet.getState().open(prompt.slice(4));
+  else await useSet.getState().build(prompt, withAi ? {} : { noAi: true });
   const plan = useSet.getState().plan;
   if (!plan) return void invoke("self_test_report", { lines: [], ok: false });
   log(`title: ${plan.title} | vibe: ${plan.intent.vibe ?? ""}`);
