@@ -12,6 +12,17 @@ export interface Settings {
   stems: boolean;
   /** Tempo changes keep the key; sets may key-shift tracks to mix harmonically. */
   keylock: boolean;
+  /** Calibrated speaker delay (ms); null = the detected output's typical delay. */
+  outputDelayMs: number | null;
+}
+
+/** The desktop's audio output and its typical extra delay (Bluetooth buffers 100-300 ms). */
+export interface AudioOutput {
+  name: string;
+  description: string;
+  bluetooth: boolean;
+  codec: string | null;
+  suggestedDelayMs: number;
 }
 
 /** Set-builder options; style switches override what the prompt implies. */
@@ -22,6 +33,7 @@ export interface PlanOptions {
   mashups?: boolean;
   smooth?: boolean;
   turntablism?: boolean;
+  noAi?: boolean;
 }
 
 export const inTauri = (): boolean => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -47,6 +59,7 @@ export const api = {
   aiTest: () => call<string>("ai_test"),
   tagLibrary: () => call<number>("library_tag"),
   stemsStatus: () => call<StemsStatus>("stems_status"),
+  audioOutput: () => call<AudioOutput>("audio_output"),
   stemsInstall: () => call<void>("stems_install"),
   stemsPrioritise: (ids: string[]) => call<void>("stems_prioritise", { ids }),
   trackVocals: (id: string) => call<string | null>("track_vocals", { id }),

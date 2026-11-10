@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use selecta_core::analysis::{analyze_pcm, Analysis};
+use selecta_core::compose;
 use selecta_core::decode::{decode_mono, to_analysis_rate};
 use selecta_core::intent;
 use selecta_core::jobs::{GroupProgress, Priority, Scheduler};
@@ -37,6 +38,67 @@ struct Settings {
     /// Tempo changes keep the key, and sets may shift keys to mix harmonically.
     #[serde(default = "yes")]
     keylock: bool,
+    /// How late the speakers are behind the audio clock (ms), calibrated by
+    /// the user. None: use the detected output's typical delay.
+    #[serde(default)]
+    output_delay_ms: Option<f64>,
+}
+
+/// The audio output the desktop is using, and how late it typically is.
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct AudioOutput {
+    name: String,
+    description: String,
+    bluetooth: bool,
+    codec: Option<String>,
+    /// Typical delay of this output on top of the engine's own (ms).
+    suggested_delay_ms: f64,
+}
+
+/// Bluetooth audio is 100-300 ms late (codec buffering), and neither WebKit
+/// nor PipeWire's pulse layer report it: WebKit says 3 ms, `pactl` says 0.
+/// Measured as a ~1/6 bar gap between what the decks showed and what a user
+/// heard on an SBC speaker. The codec's typical delay is the starting point;
+/// the sync test in Settings calibrates the rest.
+fn detect_output() -> AudioOutput {
+    let run = |args: &[&str]| {
+        std::process::Command::new("pactl")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    let Some(name) = run(&["get-default-sink"]).map(|s| s.trim().to_string()) else { return AudioOutput::default() };
+    let sinks = run(&["list", "sinks"]).unwrap_or_default();
+    let block = sinks.split("Sink #").find(|b| b.contains(&format!("Name: {name}"))).unwrap_or("");
+    let prop = |key: &str| {
+        block.lines().find_map(|l| {
+            let l = l.trim();
+            l.strip_prefix(key).and_then(|r| r.trim_start().strip_prefix('=')).map(|v| v.trim().trim_matches('"').to_string())
+        })
+    };
+    let bluetooth = name.starts_with("bluez") || prop("device.api").as_deref() == Some("bluez5");
+    let codec = prop("api.bluez5.codec");
+    let suggested_delay_ms = if !bluetooth {
+        0.0
+    } else {
+        match codec.as_deref() {
+            Some("aptx_ll" | "aptx_ll_duplex" | "faststream") => 70.0,
+            Some("lc3" | "opus_05" | "opus_g") => 130.0,
+            Some("aptx" | "aptx_hd") => 180.0,
+            Some("aac") => 250.0,
+            Some("ldac") => 280.0,
+            _ => 220.0, // SBC and unknown
+        }
+    };
+    AudioOutput { description: prop("device.description").unwrap_or_else(|| name.clone()), name, bluetooth, codec, suggested_delay_ms }
+}
+
+#[tauri::command(async)]
+async fn audio_output() -> Res<AudioOutput> {
+    Ok(tauri::async_runtime::spawn_blocking(detect_output).await.unwrap_or_default())
 }
 
 fn yes() -> bool {
@@ -161,6 +223,9 @@ struct PlanOptions {
     /// Style switches from the set builder; they override what the prompt implies.
     rapid: Option<bool>,
     mashups: Option<bool>,
+    /// Plan by rules only, even with AI on (autoplay tests, offline use).
+    #[serde(default)]
+    no_ai: bool,
     smooth: Option<bool>,
     turntablism: Option<bool>,
 }
@@ -215,55 +280,12 @@ async fn plan_set(handle: tauri::AppHandle, app: State<'_, App>, prompt: String,
             }
             o.apply_style(&mut it);
             let mut ai_notes = vec![];
-            let ai_on = llm::status(&ai).available;
+            let ai_on = llm::status(&ai).available && !o.no_ai;
             let seed = o.seed.unwrap_or_else(|| {
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
             });
             let cands = lib.candidates().map_err(err)?;
-            if ai_on {
-                // Never wait on the AI: a rules-only plan goes out now and can be
-                // played at once; the curated plan takes over when it lands
-                // (the UI splices it in after whatever is already playing).
-                if let Ok(mut draft) = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation: None, keylock }) {
-                    draft.notes.insert(0, "Instant draft by the rules: playable now, Claude is still curating.".into());
-                    let _ = handle.emit("plan-draft", &draft);
-                }
-                // Reading a prompt is a small job: the fast model does it in a few
-                // seconds, and its reading becomes a second, AI-informed draft
-                // long before the full curation lands.
-                let fast = AiConfig { model: "haiku".into(), ..ai.clone() };
-                say("Claude (haiku) is reading the prompt");
-                match llm::refine_intent(&fast, &mut it) {
-                    Ok(()) => {
-                        o.apply_style(&mut it); // switches and knobs set by hand win over the AI's reading
-                        if let Ok(mut draft) =
-                            planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation: None, keylock })
-                        {
-                            draft.notes.insert(0, "AI draft: Claude read the prompt; the full curation is still coming.".into());
-                            let _ = handle.emit("plan-draft", &draft);
-                            say("AI draft ready: playable now");
-                        }
-                    }
-                    Err(e) => ai_notes.push(format!("AI couldn't read the prompt ({e}); used rules.")),
-                }
-            }
-            let mut curation = None;
-            if ai_on && ai.curate {
-                let wide = planner::shortlist(&it, &cands, &[], 300);
-                if !wide.is_empty() {
-                    say(&format!("Claude is curating {} tracks: bangers, ballads, running order", wide.len()));
-                    let need = ((it.duration_min * 60.0 / 110.0).round() as usize).max(3);
-                    match llm::curate(&ai, &it, &wide, need) {
-                        Ok(c) => {
-                            say(&format!("Curator picked {} and vetoed {}", c.order.len(), c.avoid.len()));
-                            curation = Some(c);
-                        }
-                        Err(e) => ai_notes.push(format!("AI curation unavailable ({e}); planned by rules.")),
-                    }
-                }
-            }
-            say("Ordering by key, tempo and energy arc");
-            let mut plan = planner::plan(&it, &cands, &planner::Options { seed, exclude: vec![], curation, keylock })?;
+            let mut plan = compose::build_set(&mut it, &cands, &ai, ai_on, seed, keylock, &|it| o.apply_style(it), &say, &mut ai_notes)?;
             plan.notes.extend(ai_notes);
             let pending = lib.needs_analysis().map_err(err)?.len();
             if pending > 0 {
@@ -503,6 +525,19 @@ async fn now_playing(_np: Option<serde_json::Value>) -> Res<()> {
     Ok(())
 }
 
+/// `SELECTA_AUTOPLAY="prompt"` (+ `SELECTA_AUTOPLAY_MIN`, default 5): rescan,
+/// plan that set by rules and play it, logging every event, then exit. With
+/// the output routed to a null sink and recorded, it's an end-to-end listening
+/// test of the real app (webview, GStreamer, everything).
+#[tauri::command(async)]
+async fn autoplay_config() -> Res<Option<(String, f64, bool)>> {
+    Ok(std::env::var("SELECTA_AUTOPLAY").ok().map(|p| {
+        let min = std::env::var("SELECTA_AUTOPLAY_MIN").ok().and_then(|m| m.parse().ok()).unwrap_or(5.0);
+        // SELECTA_AUTOPLAY_AI=1: the AI builds the set (uses the user's Claude quota).
+        (p, min, std::env::var_os("SELECTA_AUTOPLAY_AI").is_some())
+    }))
+}
+
 /// `SELECTA_SELFTEST=1`: the UI runs the audio self-test in this webview and reports back.
 #[tauri::command(async)]
 async fn self_test_mode() -> Res<bool> {
@@ -581,6 +616,7 @@ pub fn run() {
                     ai: AiConfig::default(),
                     stems: true,
                     keylock: true,
+                    output_delay_ms: None,
                 });
             allow_dirs(app.handle(), &settings.music_dirs);
             let lib = Arc::new(Library::open(&data.join("library.db")).map_err(|e| e.to_string())?);
@@ -618,6 +654,8 @@ pub fn run() {
             self_test_mode,
             self_test_report,
             self_test_log,
+            autoplay_config,
+            audio_output,
             now_playing,
             stems_status,
             stems_install,

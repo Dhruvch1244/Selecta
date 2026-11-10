@@ -10,6 +10,8 @@ import { Mixer } from "@/panels/mixer";
 import { SetPanel } from "@/panels/set-panel";
 import { FxPad } from "@/panels/fx-pad";
 import { useSet } from "@/lib/set-store";
+import { useLayout } from "@/lib/layout";
+import { hintProps } from "@/lib/hint";
 import { Toolbar } from "@/panels/toolbar";
 
 /**
@@ -44,6 +46,7 @@ export function App() {
       z: () => useApp.getState().sync("A"),
       x: () => useApp.getState().sync("B"),
       n: () => useSet.getState().skip(),
+      l: () => useLayout.getState().toggleLibrary(),
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -57,12 +60,24 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const libraryOpen = useLayout((s) => s.libraryOpen);
   return (
     <div className="flex h-full flex-col">
       <Toolbar />
       <HintBar />
-      <main className="grid min-h-0 flex-1 grid-cols-[minmax(240px,300px)_1fr_auto] gap-1.5 p-1.5">
-        <Browser />
+      <main className={`grid min-h-0 flex-1 gap-1.5 p-1.5 ${libraryOpen ? "grid-cols-[minmax(240px,300px)_1fr_auto]" : "grid-cols-[1.75rem_1fr_auto]"}`}>
+        {libraryOpen ? (
+          <Browser />
+        ) : (
+          <button
+            type="button"
+            onClick={() => useLayout.getState().toggleLibrary()}
+            className="flex items-center justify-center rounded-sm border border-border bg-[var(--glass)] text-muted-foreground hover:text-foreground"
+            {...hintProps({ label: "Show the library", keys: "L" })}
+          >
+            <span className="font-display text-[11px] uppercase tracking-[0.25em] [writing-mode:vertical-rl]">Library ▸</span>
+          </button>
+        )}
         <div className="grid min-h-0 grid-rows-[auto_minmax(120px,1fr)_minmax(120px,1fr)_auto] gap-1.5">
           <SetPanel />
           <DeckLane id="A" />

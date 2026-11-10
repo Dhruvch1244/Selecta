@@ -78,6 +78,25 @@ impl TransitionKind {
             _ => return None,
         })
     }
+    /// The id used in plans, prompts and the UI ("double_drop").
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Blend => "blend",
+            Self::BassSwap => "bassswap",
+            Self::DoubleDrop => "double_drop",
+            Self::Filter => "filter",
+            Self::EchoOut => "echo_out",
+            Self::Slam => "slam",
+            Self::Backspin => "backspin",
+            Self::TapeStop => "tape_stop",
+            Self::Rewind => "rewind",
+            Self::LoopRoll => "loop_roll",
+            Self::AcapellaBuild => "acapella_build",
+            Self::Bootleg => "bootleg",
+            Self::Mashup => "mashup",
+        }
+    }
     pub fn beatmatched(self) -> bool {
         matches!(self, Self::Blend | Self::BassSwap | Self::DoubleDrop | Self::Filter) || self.stems()
     }
@@ -114,6 +133,12 @@ pub struct Transition {
     /// Length of that hook loop in incoming bars (4 or 8).
     #[serde(default)]
     pub loop_bars: Option<u32>,
+}
+
+impl Transition {
+    pub fn kind_label(&self) -> &'static str {
+        self.kind.id()
+    }
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -543,7 +568,7 @@ pub fn rescript(
     pool.extend(rest.iter().filter(|id| **id != from.id).filter_map(|id| find(id)).map(|c| (c, fit(c, intent))));
     let work = make_works(intent, &pool, None);
     let seq: Vec<&Work> = work.iter().collect();
-    let mut tracks = script(&seq, intent, Some(from), keylock, &mut rng);
+    let mut tracks = script(&seq, intent, Some(from), keylock, None, &mut rng);
     finish(&mut tracks, &seq, intent, &mut rng);
     Ok(tracks)
 }
@@ -661,10 +686,19 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
         next.truncate(14);
         beams = next;
     }
-    let seq: Vec<&Work> = beams[0].0.iter().map(|i| &work[*i]).collect();
+    let mut seq: Vec<&Work> = beams[0].0.iter().map(|i| &work[*i]).collect();
+    // The curator's running order is the set when it gave one: the AI places
+    // the songs. (As a mere "guide" the beam search reordered it, and the AI's
+    // notes then described a different set from the one that played.)
+    if let Some(cur) = cur.filter(|c| c.order.len() >= 2) {
+        let ordered: Vec<&Work> = cur.order.iter().filter_map(|id| work.iter().find(|w| &w.c.track.id == id)).collect();
+        if ordered.len() >= 2 {
+            seq = ordered;
+        }
+    }
 
     // 3. Script.
-    let mut out = script(&seq, intent, None, opts.keylock, &mut rng);
+    let mut out = script(&seq, intent, None, opts.keylock, cur.map(|c| &c.moves), &mut rng);
     let total = finish(&mut out, &seq, intent, &mut rng);
     let len = out.len();
     let created = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
@@ -778,6 +812,32 @@ fn vocal_hook(c: &Candidate) -> Option<(u32, u32)> {
     None
 }
 
+/// Bars where a track is a good instrumental bed for someone else's vocal:
+/// drops and energetic sections, else any phrase whose next 16 bars are hot.
+fn beds(a: &Analysis) -> Vec<u32> {
+    let mut v = landings(a, 0);
+    if v.is_empty() {
+        let e = &a.bar_energy;
+        v = (a.start_bar..a.bars.saturating_sub(16))
+            .step_by(8)
+            .filter(|b| {
+                let s = &e[(*b as usize).min(e.len())..((*b + 16) as usize).min(e.len())];
+                !s.is_empty() && s.iter().sum::<f32>() / s.len() as f32 >= 0.6
+            })
+            .collect();
+    }
+    v
+}
+
+fn pa_drops_empty(w: &Work) -> bool {
+    w.a().drops.is_empty()
+}
+
+/// Whether a track has a clear sung hook to loop (for the AI's track facts).
+pub fn has_vocal_hook(c: &Candidate) -> bool {
+    vocal_hook(c).is_some()
+}
+
 /// Where a track can "land": its drops and rising sections, at least `lead` bars in.
 fn landings(a: &Analysis, lead: u32) -> Vec<u32> {
     let mut v: Vec<u32> = a
@@ -845,13 +905,14 @@ fn place_stem_move(
         }
         TransitionKind::Bootleg => {
             let lead = if rng.next_f64() < 0.35 { 32 } else { 16 };
-            let land = landings(a, lead).into_iter().find(|l| vox(w.c, l - lead, *l) >= 0.4)?;
-            let od = pa
-                .drops
-                .iter()
-                .cloned()
-                .filter(|d| *d >= prev_in + 8 && d + lead + 1 < pa.bars)
-                .min_by(|x, y| near(x).total_cmp(&near(y)))?;
+            // With a loopable hook the vocal comes from the hook, so any landing
+            // will do; without one, the bars before the landing must be sung.
+            let hook = vocal_hook(w.c).is_some();
+            let land = landings(a, lead).into_iter().find(|l| hook || vox(w.c, l - lead, *l) >= 0.4)?;
+            // The bed: a drop, or (hip hop rarely has EDM drops) any energetic
+            // section or phrase of the outgoing.
+            let od =
+                beds(pa).into_iter().filter(|d| *d >= prev_in + 8 && d + lead + 1 < pa.bars).min_by(|x, y| near(x).total_cmp(&near(y)))?;
             Some((land - lead, od + lead, hooked(t(od, lead, od, od + lead, Some(od)))))
         }
         TransitionKind::Mashup => {
@@ -955,12 +1016,19 @@ fn pick_transition(p: &Work, t: &Work, compat: bool, stem_ok: bool, hist: &Histo
         }
     }
     if p.a().drops.is_empty() || t.a().drops.is_empty() {
-        weights.retain(|(k, _)| !matches!(k, TransitionKind::DoubleDrop | TransitionKind::Mashup | TransitionKind::Bootleg));
+        weights.retain(|(k, _)| !matches!(k, TransitionKind::DoubleDrop | TransitionKind::Mashup));
     }
     *rng.pick(&weights)
 }
 
-fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: bool, rng: &mut Rng) -> Vec<SetTrack> {
+fn script(
+    seq: &[&Work],
+    intent: &Intent,
+    first: Option<&SetTrack>,
+    keylock: bool,
+    suggested: Option<&BTreeMap<String, String>>,
+    rng: &mut Rng,
+) -> Vec<SetTrack> {
     let mut out: Vec<SetTrack> = vec![];
     let mut tempo = 0.0;
     for (i, w) in seq.iter().enumerate() {
@@ -1024,6 +1092,19 @@ fn script(seq: &[&Work], intent: &Intent, first: Option<&SetTrack>, keylock: boo
             *hist.used.entry(t.trans.kind).or_default() += 1;
         }
         let mut kind = pick_transition(p, w, compat, stem_ok, &hist, intent, rng);
+        // The curator's move for this pair, when the pair can support it.
+        if let Some(k) = suggested.and_then(|m| m.get(&w.c.track.id)).and_then(|s| TransitionKind::from_id(s)) {
+            let feasible = if k.stems() {
+                compat && stem_ok
+            } else if k.beatmatched() {
+                compat && (k != TransitionKind::DoubleDrop || (!pa_drops_empty(p) && !a.drops.is_empty()))
+            } else {
+                true
+            };
+            if feasible {
+                kind = k;
+            }
+        }
         let pa = p.a();
 
         if kind.stems() {
@@ -1432,6 +1513,8 @@ mod tests {
             title: Some("Curated Pressure".into()),
             vibe: Some("rolling".into()),
             moments: vec!["Solar: rewind the drop".into()],
+            // A move any pair supports, and one these synthetic tracks can't (no stems).
+            moves: [(id("Come Alive"), "echo_out".to_string()), (id("Solar"), "bootleg".to_string())].into_iter().collect(),
         };
         let p = plan(&it, &lib, &Options { seed: 5, exclude: vec![], curation: Some(cur), keylock: false }).unwrap();
         assert!(p.curated);
@@ -1440,6 +1523,11 @@ mod tests {
         assert!(p.tracks.iter().all(|t| t.title != "Neuro Storm"), "vetoed track must not appear");
         assert!(p.notes.iter().any(|n| n.contains("rewind the drop")));
         assert_eq!(p.tracks[0].title, "Liquid Sky", "the curator's opener should open");
+        // The AI places the songs: its running order is the set, exactly.
+        let titles: Vec<&str> = p.tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["Liquid Sky", "Watercolour", "Come Alive", "Solar"]);
+        assert_eq!(p.tracks[2].trans.kind, TransitionKind::EchoOut, "a feasible suggested move is used");
+        assert_ne!(p.tracks[3].trans.kind, TransitionKind::Bootleg, "an infeasible one (no stems) is not");
     }
 
     #[test]

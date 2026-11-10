@@ -252,7 +252,7 @@ function Timeline({ tracks, current }: { tracks: SetTrack[]; current: number }) 
         if (!t) return;
         const before = tracks.slice(0, current).reduce((s, x) => s + Math.max(20, x.estSec), 0);
         const span = Math.max(1, t.outBar - t.inBar);
-        const frac = Math.min(1, Math.max(0, (deck.bar() - t.inBar) / span));
+        const frac = Math.min(1, Math.max(0, (deck.bar(deck.heardTime()) - t.inBar) / span));
         el.style.opacity = "1";
         el.style.left = `${((before + frac * Math.max(20, t.estSec)) / total) * 100}%`;
       }),

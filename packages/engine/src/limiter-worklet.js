@@ -65,6 +65,12 @@ class Limiter extends AudioWorkletProcessor {
       this.pos = (this.pos + 1) % L;
     }
     this.reduction = 20 * Math.log10(Math.max(minGain, 1e-6));
+    // Report the deepest reduction ~20x a second, for the master readout.
+    this.worst = Math.min(this.worst ?? 0, this.reduction);
+    if ((this.blocks = (this.blocks ?? 0) + 1) % 18 === 0) {
+      this.port.postMessage(this.worst);
+      this.worst = 0;
+    }
     return true;
   }
 }

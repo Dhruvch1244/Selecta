@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, type PlanOptions } from "./api";
 import { loadTrackAudio } from "./track-audio";
+import { useLayout } from "./layout";
 import { getEngine, useApp } from "./store";
 
 interface SetState {
@@ -53,6 +54,7 @@ export const useSet = create<SetState>((set, get) => {
     } else if (e.type === "postponed") status("Next track still decoding; holding this one for another phrase.");
     else if (e.type === "end") {
       set({ playing: false, leadDeck: null });
+      useLayout.getState().setStopped();
       status("Set complete.");
     } else if (e.type === "error") status(e.message);
   };
@@ -81,12 +83,6 @@ export const useSet = create<SetState>((set, get) => {
       if (get().planning) return;
       set({ planning: true, error: null, progress: [] });
       const unlisten = await listen<string>("plan-progress", (e) => set((s) => ({ progress: [...s.progress, e.payload] }))).catch(() => () => {});
-      // The instant rules draft: shown (and playable) while the AI curates.
-      const unlistenDraft = await listen<SetPlan>("plan-draft", (e) => {
-        if (!get().planning || get().playing) return;
-        set({ plan: e.payload, draft: true, index: 0 });
-        useApp.getState().setStatus("Draft ready: press Play now, Claude's curation will take over when it lands.");
-      }).catch(() => () => {});
       try {
         let plan = await api.planSet(prompt, { ...opts, ...(reroll ? { seed: Date.now() } : {}) });
         if (get().draft && get().playing && conductor?.plan) plan = (await spliceIntoPlaying(plan)) ?? conductor.plan;
@@ -99,7 +95,6 @@ export const useSet = create<SetState>((set, get) => {
         set({ error: e instanceof Error ? e.message : String(e) });
       } finally {
         unlisten();
-        unlistenDraft();
         set({ planning: false, draft: false });
       }
     },
@@ -117,6 +112,7 @@ export const useSet = create<SetState>((set, get) => {
       try {
         set({ playing: true, error: null });
         // The conductor mutates cue points (skips, postponements); give it its own copy.
+        useLayout.getState().setStarted();
         const c = ensureConductor();
         c.keylock = useApp.getState().settings?.keylock ?? true;
         await c.start(structuredClone(plan));
@@ -126,6 +122,7 @@ export const useSet = create<SetState>((set, get) => {
     },
     stop: () => {
       conductor?.stop();
+      useLayout.getState().setStopped();
       set({ playing: false, leadDeck: null });
       for (const id of ["A", "B"] as const) useApp.setState((s) => ({ decks: { ...s.decks, [id]: { ...s.decks[id], playing: false } } }));
     },

@@ -1,5 +1,6 @@
 import * as React from "react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/dsgn/dropdown-menu";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/dsgn/dropdown-menu";
+import { useLayout } from "@/lib/layout";
 import { Lcd } from "@/components/studio/lcd";
 import { Meter } from "@/components/studio/meter";
 import { onFrame } from "@/lib/frame";
@@ -19,6 +20,8 @@ export function Toolbar() {
   const lat = React.useRef<HTMLSpanElement>(null);
   const [theme, setTheme] = React.useState(() => document.documentElement.dataset.theme ?? "dark");
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const libraryOpen = useLayout((s) => s.libraryOpen);
+  const autoHide = useLayout((s) => s.autoHideLibrary);
   const ai = useApp((s) => s.settings?.ai);
   const readMaster = React.useCallback(() => peekEngine()?.master ?? null, []);
 
@@ -32,7 +35,7 @@ export function Toolbar() {
         if (bpm.current) bpm.current.textContent = lead ? lead.bpm.toFixed(2) : "---.--";
         if (key.current) key.current.textContent = lead?.track ? lead.track.analysis.camelot : "--";
         if (time.current && lead) {
-          const p = lead.position();
+          const p = lead.position(lead.heardTime());
           time.current.textContent = `${Math.floor(p / 60)}:${String(Math.floor(p % 60)).padStart(2, "0")}.${Math.floor((p % 1) * 10)}`;
         }
         if (lat.current) lat.current.textContent = `${e.latencyMs} ms`;
@@ -63,6 +66,13 @@ export function Toolbar() {
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Library</DropdownMenuLabel>
           <DropdownMenuItem onSelect={() => void useApp.getState().scan()}>Rescan music folders</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => useLayout.getState().toggleLibrary()}>
+            {libraryOpen ? "Hide library" : "Show library"}
+            <DropdownMenuShortcut>L</DropdownMenuShortcut>
+          </DropdownMenuItem>
+          <DropdownMenuCheckboxItem checked={autoHide} onCheckedChange={(v) => useLayout.getState().setAutoHide(v === true)}>
+            Auto-hide library during sets
+          </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Theme</DropdownMenuLabel>
           <DropdownMenuRadioGroup value={theme} onValueChange={applyTheme}>

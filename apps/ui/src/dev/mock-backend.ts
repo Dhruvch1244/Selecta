@@ -27,7 +27,7 @@ async function installRealLibrary(): Promise<boolean> {
   const tracks: TrackSummary[] = lib.map((t) => ({ id: t.id, path: t.path, artist: t.artist, title: t.title, album: t.album, genreTag: t.genreTag, duration: t.duration, analyzed: true, bpm: t.analysis.bpm, key: t.analysis.key, camelot: t.analysis.camelot, mood: t.mood, error: null, stems: !!t.vocals }));
   const planList = Object.entries(plans).map(([prompt, p], i) => ({ ...p, id: `real${i}`, prompt }));
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
-    settings_get: () => ({ musicDirs: ["/__fixtures__/lib"], ai: { provider: "off", model: "sonnet", binary: "claude", curate: false, tagLibrary: false }, stems: true, keylock: true }),
+    settings_get: () => ({ musicDirs: ["/__fixtures__/lib"], ai: { provider: "off", model: "sonnet", binary: "claude", curate: false, tagLibrary: false }, stems: true, keylock: true, outputDelayMs: null }),
     ai_status: () => ({ available: false, provider: "off", model: "", detail: "AI off (real-library mock)" }),
     library_tracks: () => tracks,
     library_scan: () => ({ found: tracks.length, added: 0, updated: 0, removed: 0 }),
@@ -38,6 +38,7 @@ async function installRealLibrary(): Promise<boolean> {
     sets_list: () => planList.map((p) => ({ id: p.id, created: p.created, title: p.title, prompt: p.prompt, tracks: p.tracks.length })),
     set_get: (a) => structuredClone(planList.find((p) => p.id === a.id) ?? planList[0]),
     stems_status: () => ({ installed: true, installing: false, device: "cuda", detail: "", done: 0, total: 0 }),
+    audio_output: () => ({ name: "mock", description: "Mock speakers", bluetooth: false, codec: null, suggestedDelayMs: 0 }),
     now_playing: (a) => ((window as unknown as { __nowPlaying: unknown }).__nowPlaying = a.np),
   };
   const noop = () => null;
@@ -87,9 +88,10 @@ export async function installMockBackend(): Promise<void> {
     }
   }
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
-    settings_get: () => ({ musicDirs: ["/__fixtures__"], ai: { provider: "claude", model: "sonnet", binary: "claude", curate: true, tagLibrary: true }, stems: true, keylock: true }),
+    settings_get: () => ({ musicDirs: ["/__fixtures__"], ai: { provider: "claude", model: "sonnet", binary: "claude", curate: true, tagLibrary: true }, stems: true, keylock: true, outputDelayMs: null }),
     stems_status: () => ({ installed: true, installing: false, device: "cuda", detail: "", done: 0, total: 0 }),
     stems_install: () => null,
+    audio_output: () => ({ name: "mock", description: "Mock speakers", bluetooth: false, codec: null, suggestedDelayMs: 0 }),
     now_playing: (a) => ((window as unknown as { __nowPlaying: unknown }).__nowPlaying = a.np),
     stems_prioritise: () => null,
     track_vocals: (a) => {

@@ -4,6 +4,7 @@
 //! serde types, exported to TypeScript by ts-rs, so the two sides never drift.
 
 pub mod analysis;
+pub mod compose;
 pub mod decode;
 pub mod fx;
 pub mod genres;

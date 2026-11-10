@@ -46,7 +46,7 @@ export function DetailWave({ deck, color, className }: { deck: Deck; color: stri
       const tr = deck.track;
       if (!wv || !tr) return;
       const a = tr.analysis;
-      const pos = deck.position();
+      const pos = deck.position(deck.heardTime());
       const x0 = pos - SPAN;
       const pxs = w / (2 * SPAN);
       const mid = h / 2;
@@ -145,7 +145,7 @@ export function OverviewWave({ deck, color, onSeek, className }: { deck: Deck; c
       const bx = (bar: number) => (posOfBar({ beat: a.beat, downbeat0: a.downbeat0 }, bar) / a.duration) * w;
       c.fillStyle = col("--warm");
       for (const d of a.drops) c.fillRect(bx(d), 0, dpr, h);
-      const px = (deck.position() / a.duration) * w;
+      const px = (deck.position(deck.heardTime()) / a.duration) * w;
       c.fillStyle = col("--background");
       c.globalAlpha = 0.45;
       c.fillRect(0, 0, px, h);

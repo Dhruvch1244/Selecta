@@ -176,6 +176,9 @@ export class Deck {
     // early). Its own field: overrides move `base` (a jump lands at t1).
     return this.src !== null && now >= this.startAt - 0.002 && now < this.stoppedAt;
   }
+  /** Context time being heard now (the engine accounts for output latency); visuals use it. */
+  heardTime: () => number = () => this.ctx.currentTime;
+
   /** Has a source with no stop scheduled: playing, or scheduled to start. */
   get armed(): boolean {
     return this.src !== null && this.stoppedAt === Infinity;
