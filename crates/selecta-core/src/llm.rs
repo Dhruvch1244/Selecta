@@ -352,6 +352,7 @@ pub fn liner_notes(cfg: &AiConfig, plan: &crate::planner::SetPlan) -> Result<Lin
     let prompt = format!(
         "You are the DJ who will play this exact set for the request \"{}\". Write its liner notes.\n\
          Describe ONLY what is listed: these tracks, in this order, with these transitions. Do not invent tracks or moves.\n\
+         Write clean, final prose for a listener: no self-corrections, no ellipses, no internal reasoning, one idea per note.\n\
          Return ONLY JSON: {{\"title\": \"catchy set name\", \"vibe\": \"one or two sentences on the journey\",\n\
           \"moments\": [{{\"n\": <track number>, \"note\": \"what happens here and why it works\"}}]}} (3 to 6 moments).\n\n\
          The set (n | starts at | track | tempo | key | transition into it):\n{}",
