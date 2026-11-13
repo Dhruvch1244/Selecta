@@ -149,12 +149,33 @@ I/O/DSP commands are `#[tauri::command(async)]`; UI frame work goes through
   early, while the other is still building"). `refine_drops` snaps each
   drop to the beat where the sub jumps back to full level after a bass-light
   stretch, and shifts the bar line when the drops consistently slam on
-  another beat. Check with the slam offset per drop (68% on the bar line,
-  12% a bar off after the fix).
+  another beat. Measure the sub on 20-100 Hz (up to 150 Hz caught risers
+  and kick punch the beat before), only from frames whose whole STFT window
+  is inside the beat (a centred frame hears ~40 ms of the next beat, which
+  in power read as a 10 dB jump a beat early), and locate the hit on the
+  beat's *first half*: DnB basses often push in an eighth early, and the
+  full-beat level moved the bar line a beat short (test
+  `a_bass_pushed_an_eighth_early_still_drops_on_the_one`). On the real
+  library: 63% of drops exactly on the slam, 6% a bar or more off.
+- **Never postpone a double drop by a phrase:** when the next track isn't
+  decoded in time the conductor holds the current one, and pushing a
+  drop-on-drop move 8 bars landed the incoming's drop in the middle of the
+  outgoing's. It now waits for the outgoing's next drop, and tracks are
+  prepared two ahead (one ahead held 7 times in a 9-minute rapid set).
+- **Moves are scored, not rolled:** `script` places every move a pair allows
+  (`place_move`) and scores it on both tracks' analysis (`quality`: the
+  incoming's drop on the hand-off, the outgoing's drop or energy fall, no
+  stacked full drops, no two singers, play length, phrase lines). The genre
+  table is only the prior; a weighted dice roll cut into intros and paired
+  drops that didn't line up.
 - **Layers are events, not wallpaper:** a density of ~0.8 loops per track
   turned a house set into riff-on-riff mud. `layers.rs` caps it at half the
   tracks, keeps a motif off neighbouring tracks and at most 3 uses, and only
-  places loops in a track's solo bars (never during a transition).
+  places loops in a track's solo bars. The exception is a double drop where
+  nobody really sings (vocal presence < 0.6: stems pick up synth bleed in
+  loud drops): a third track's sung hook loops over both drops
+  (`over_mix`), and both decks' vocals duck for it. Vocal loops are
+  preferred over riffs unless the prompt asks for basslines.
 
 ## Dependencies
 

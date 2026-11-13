@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::intent::Intent;
-use crate::planner::{camelot_score, phrases, shift_camelot, vocal_hook, vox, Candidate, Rng, SetTrack};
+use crate::planner::{camelot_score, phrases, shift_camelot, vocal_hook, vox, Candidate, Rng, SetTrack, TransitionKind};
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +71,10 @@ pub struct Layer {
     /// Semitones the source is shifted to sit in the host's key.
     pub key_shift: i32,
     pub reason: String,
+    /// Rides a transition (a double drop) rather than one track's solo
+    /// bars: both decks' vocals make room for it.
+    #[serde(default)]
+    pub over_mix: bool,
 }
 
 /// An AI request: loop `src`'s `part` over the tracks in `over`.
@@ -85,8 +89,9 @@ pub struct AiLayer {
 pub fn material(c: &Candidate, part: LayerPart) -> Option<(u32, u32)> {
     let a = &c.analysis;
     match part {
-        // A 4-bar piece of its sung hook (vocal stem required).
-        LayerPart::Vocal => vocal_hook(c).map(|(s, _)| (s, 4)),
+        // Its whole sung hook, 8 bars when it has one that long (vocal stem
+        // required): a 4-bar chop repeated over 16 bars sounded like a stuck record.
+        LayerPart::Vocal => vocal_hook(c),
         // The first 4 bars of a drop that is energetic and (when known) not sung over.
         LayerPart::Riff => a
             .drops
@@ -155,6 +160,7 @@ struct Opt {
     shift: i32,
     loop_at: (u32, u32),
     score: f64,
+    over_mix: bool,
 }
 
 /// Effects that take over the host deck's playback (rolls, stutters, stops):
@@ -283,8 +289,62 @@ pub fn place(
                     LayerPart::Vocal if want_vocal => 0.4,
                     _ => 0.0,
                 };
-                let score = wscore + 0.8 * key + 0.5 * (1.0 - 6.0 * (rate - 1.0).abs()) + bonus + ai_bonus + asked + rng.gauss(0.08);
-                opts.push(Opt { host: i, src: si, part, kind, from, to: from + len, ratio, shift, loop_at, score });
+                // Voices over riffs: a sung hook reads as a mashup, a second
+                // bassline mostly as mud (heard on a real set), unless asked for.
+                let voice = match part {
+                    LayerPart::Vocal => 0.35,
+                    LayerPart::Riff if want_riff => 0.0,
+                    LayerPart::Riff => -0.2,
+                };
+                let score =
+                    wscore + 0.8 * key + 0.5 * (1.0 - 6.0 * (rate - 1.0).abs()) + bonus + ai_bonus + asked + voice + rng.gauss(0.08);
+                opts.push(Opt { host: i, src: si, part, kind, from, to: from + len, ratio, shift, loop_at, score, over_mix: false });
+            }
+        }
+    }
+
+    // Double drops get a voice. Two instrumental drops slamming together
+    // are a wall of bass; a sung hook on a third deck on top of both is what
+    // a DJ like Hedex does to make it a moment. Only where neither drop is
+    // really sung (then that vocal carries it, see the planner's vocal lead), in key with both tracks.
+    let mut dd_hosts: Vec<usize> = vec![];
+    for i in 0..n - 1 {
+        let nt = &tracks[i + 1];
+        let Some(drop) = nt.trans.swap_at.filter(|_| nt.trans.kind == TransitionKind::DoubleDrop) else { continue };
+        let to = (drop + 16).min(tracks[i].out_bar);
+        if to < drop + 8 {
+            continue;
+        }
+        let inc = |x: u32| (nt.in_bar + x).saturating_sub(nt.trans.enter_at);
+        // (The stem picks up some synth bleed in a loud drop: below ~0.6 nobody really sings.)
+        if vox(hosts[i], drop, to).max(vox(hosts[i + 1], inc(drop), inc(to))) >= 0.6 {
+            continue;
+        }
+        let host_bpm = tracks[i].bpm * tracks[i].rate;
+        let in_key = shift_camelot(&nt.camelot, nt.key_shift);
+
+        for (si, (s, set_at, fit)) in srcs.iter().enumerate() {
+            // Any third track: one that played, one still to come (a tease), or a tool.
+            let kind = match set_at {
+                Some(j) if *j < i => LayerKind::Callback,
+                Some(j) if *j >= i + 2 => LayerKind::Tease,
+                Some(_) => continue,
+                None => LayerKind::Tool,
+            };
+            let Some(loop_at) = material(s, LayerPart::Vocal) else { continue };
+            let Some((ratio, rate)) = fit_tempo(s.analysis.bpm, host_bpm, LayerPart::Vocal) else { continue };
+            let Some((shift, key)) = fit_key(s, &tracks[i], hosts[i].analysis.key_conf, LayerPart::Vocal) else { continue };
+            let confident = s.analysis.key_conf >= 0.6 && hosts[i + 1].analysis.key_conf >= 0.6;
+            if confident && camelot_score(&shift_camelot(&s.analysis.camelot, shift), &in_key) < 0.7 {
+                continue;
+            }
+            let ai = ai_wants(&s.track.id, &hosts[i].track.id, LayerPart::Vocal)
+                || ai_wants(&s.track.id, &hosts[i + 1].track.id, LayerPart::Vocal);
+            let bonus = if kind == LayerKind::Callback { 0.3 } else { 0.5 * fit.min(1.0) - 0.1 };
+            let score = 3.0 + 0.8 * key + 0.5 * (1.0 - 6.0 * (rate - 1.0).abs()) + bonus + if ai { 2.0 } else { 0.0 } + rng.gauss(0.08);
+            opts.push(Opt { host: i, src: si, part: LayerPart::Vocal, kind, from: drop, to, ratio, shift, loop_at, score, over_mix: true });
+            if !dd_hosts.contains(&i) {
+                dd_hosts.push(i);
             }
         }
     }
@@ -294,7 +354,7 @@ pub fn place(
     // constant riff-on-riff mud; a loop should be an event.
     let dens = (0.15 + 0.25 * intent.chaos + 0.15 * intent.mashups) * if intent.smooth { 0.5 } else { 1.0 };
     let ai_count = ai.iter().map(|l| l.over.len()).sum::<usize>();
-    let target = ((n as f64 * dens).round() as usize).min(n / 2).max(ai_count.min(n - 1));
+    let target = ((n as f64 * dens).round() as usize).min(n / 2).max(ai_count.min(n - 1)) + dd_hosts.len();
     // Vocal and riff from different sources may stack over one host (a
     // 3-4 deck mashup: host drums, one track's bass, another's voice).
     let stack = intent.chaos >= 0.75 || intent.mashups >= 0.7;
@@ -307,7 +367,7 @@ pub fn place(
             .iter()
             .enumerate()
             .filter(|(_, o)| {
-                let on_host: Vec<&Opt> = chosen.iter().filter(|c| c.host == o.host).collect();
+                let on_host: Vec<&Opt> = chosen.iter().filter(|c| c.host == o.host && c.over_mix == o.over_mix).collect();
                 let host_ok = on_host.is_empty() || (stack && on_host.len() == 1 && on_host[0].part != o.part && on_host[0].src != o.src);
                 let uses: Vec<&Opt> = chosen.iter().filter(|c| c.src == o.src).collect();
                 host_ok && uses.len() < 3 && uses.iter().all(|u| u.host.abs_diff(o.host) >= 2 && u.part == o.part)
@@ -320,7 +380,7 @@ pub fn place(
         let Some((k, _)) = best else { break };
         let mut o = opts.swap_remove(k);
         // Stacked layers share the window of the first one on that host.
-        if let Some(first) = chosen.iter().find(|c| c.host == o.host) {
+        if let Some(first) = chosen.iter().find(|c| c.host == o.host && c.over_mix == o.over_mix) {
             (o.from, o.to) = (first.from, first.to);
         }
         chosen.push(o);
@@ -342,6 +402,7 @@ pub fn place(
             LayerPart::Riff => "riff",
         };
         let reason = match kind {
+            _ if o.over_mix => format!("{}'s {what} over the double drop", s.track.title),
             LayerKind::Callback => format!("{}'s {what} comes back over this one", s.track.title),
             LayerKind::Tease => format!("teases {}'s {what} before it drops", s.track.title),
             LayerKind::Anthem => format!("{}'s {what} again: the set's recurring loop", s.track.title),
@@ -365,10 +426,17 @@ pub fn place(
             beat_ratio: o.ratio,
             key_shift: o.shift,
             reason,
+            over_mix: o.over_mix,
         });
     }
     for ((src, host), why) in why_not {
-        if !tracks.iter().any(|t| t.title == host && t.layers.iter().any(|l| l.title == src)) {
+        // A loop over a double drop sits on the outgoing track but is over both.
+        let done = (0..n).any(|k| {
+            tracks[k].title == host
+                && (tracks[k].layers.iter().any(|l| l.title == src)
+                    || k > 0 && tracks[k - 1].layers.iter().any(|l| l.over_mix && l.title == src))
+        });
+        if !done {
             notes.push(format!("Couldn't loop {src} over {host}: {why}."));
         }
     }
