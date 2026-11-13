@@ -36,4 +36,10 @@ loopFrom: number | null,
 /**
  * Length of that hook loop in incoming bars (4 or 8).
  */
-loopBars: number | null, };
+loopBars: number | null, 
+/**
+ * Outgoing-track bar until which the incoming's vocal stem stays muted:
+ * on a double drop where the outgoing is the one really singing, its
+ * vocal leads and hands over to the incoming's here.
+ */
+voxInFrom: number | null, };

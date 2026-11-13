@@ -31,7 +31,7 @@ const BINS: usize = NFFT / 2 + 1;
 const ONSET_LAG: f64 = 0.039;
 /// Bump when analysis output changes; stored tracks with an older version are re-analysed.
 /// 2: peak-aware gain (`peak_db`), soft genre tempo prior.
-pub const ANALYSIS_VERSION: u32 = 5;
+pub const ANALYSIS_VERSION: u32 = 6;
 
 /// Loudness every track's loud parts are brought to (LUFS, short-term 3 s,
 /// 90th percentile). Measured on the real library: lossy files overshoot
@@ -128,18 +128,41 @@ pub fn norm_gain(loudness: f64, peak_db: f64) -> f64 {
 }
 
 /// Sub-bass level (< ~150 Hz, dB) over each beat starting at `beats_t`.
-fn sub_db_per_beat(sp: &Spectrum, beats_t: &[f64], beat: f64, low_bins: usize) -> Vec<f64> {
+///
+/// Only frames whose whole window lies inside the beat count: a centred
+/// 2048-point frame near the end of a silent beat already hears ~40 ms of the
+/// next one, and averaged in power that leak read as a >= 10 dB jump, so a
+/// drop's slam was found a beat early (and bar lines were "corrected" a beat
+/// short of the real downbeat).
+///
+/// `frac` < 1 measures only the beat's first part: where a hit *lands*. A
+/// bass that comes in an eighth early (a common DnB push into the drop)
+/// fills the end of the previous beat, which the full-beat level counts.
+fn sub_db_per_beat(sp: &Spectrum, beats_t: &[f64], beat: f64, frac: f64) -> Vec<f64> {
     let fps = sp.fps();
+    let half = (NFFT / 2) as f64 / sp.rate;
+    let margin = half.min(0.3 * beat);
+    // The sub itself, 20-100 Hz: up to 150 Hz caught a build's riser and
+    // kick punch on the beat before the drop.
+    let (lo_bin, hi_bin) = (sp.bin_of(20.0).max(1), sp.bin_of(100.0) + 1);
     beats_t
         .iter()
         .map(|t| {
-            let a = ((t * fps) as usize).min(sp.frames.saturating_sub(1));
-            let b = (((t + beat) * fps) as usize).clamp(a + 1, sp.frames.max(a + 1));
-            let e: f64 =
-                (a..b.min(sp.frames)).map(|f| sp.row(f)[1..low_bins.max(2)].iter().map(|v| (*v as f64).powi(2)).sum::<f64>()).sum();
+            let a = (((t + margin) * fps).ceil() as usize).min(sp.frames.saturating_sub(1));
+            let end = if frac < 1.0 { t + frac * beat } else { t + beat - margin };
+            let b = ((end * fps).floor() as usize + 1).clamp(a + 1, sp.frames.max(a + 1));
+            let e: f64 = (a..b.min(sp.frames))
+                .map(|f| sp.row(f)[lo_bin..hi_bin.max(lo_bin + 1)].iter().map(|v| (*v as f64).powi(2)).sum::<f64>())
+                .sum();
             10.0 * (e / (b - a).max(1) as f64 + 1e-12).log10()
         })
         .collect()
+}
+
+/// Sub-bass per beat: over the whole beat, and over its first half (where a hit lands).
+struct Bass {
+    sub: Vec<f64>,
+    head: Vec<f64>,
 }
 
 /// Power mean of dB values, in dB.
@@ -150,14 +173,15 @@ fn pmean_db(v: &[f64]) -> f64 {
 /// How hard the bass returns at beat `i`: the next 2 bars' sub level over
 /// the median of the 2 bars before, when the sub also jumps >= 10 dB on
 /// that very beat (a pickup or a rhythmic bassline doesn't count).
-fn slam_at(sub: &[f64], full: f64, i: i64) -> f64 {
+fn slam_at(b: &Bass, full: f64, i: i64) -> f64 {
+    let (sub, head) = (&b.sub, &b.head);
     if i < 8 || i as usize + 8 > sub.len() {
         return 0.0;
     }
     let i = i as usize;
     // ...and it reaches the track's full bass level: a riser or snare roll
     // coming out of a silent break jumps too, but stays well below it.
-    if sub[i] - sub[i - 1] < 10.0 || pmean_db(&sub[i..i + 8]) < full - 6.0 {
+    if head[i] - head[i - 1] < 10.0 || head[i] < full - 8.0 || pmean_db(&sub[i..i + 8]) < full - 6.0 {
         return 0.0;
     }
     let mut pre = sub[i - 8..i].to_vec();
@@ -172,7 +196,8 @@ fn slam_at(sub: &[f64], full: f64, i: i64) -> f64 {
 /// returns, per beat of the bar (0..4), how strongly the slams land there:
 /// they should land on the one, so a consistent other beat means the bar
 /// line is off by that much.
-fn refine_drops(drops: &[u32], sub: &[f64], first_beat: i64, energy: &[f32], start_bar: usize) -> (Vec<u32>, [f64; 4]) {
+fn refine_drops(drops: &[u32], bass: &Bass, first_beat: i64, energy: &[f32], start_bar: usize) -> (Vec<u32>, [f64; 4]) {
+    let (sub, head) = (&bass.sub, &bass.head);
     let nb = energy.len();
     let mut votes = [0f64; 4];
     let full = {
@@ -191,27 +216,57 @@ fn refine_drops(drops: &[u32], sub: &[f64], first_beat: i64, energy: &[f32], sta
         let bar = (i - first_beat).div_euclid(4) + if k == 3 { 1 } else { 0 };
         (bar, k)
     };
+    // The bass jump into beat `i` (dB), when it lands at full level.
+    let jump = |i: i64| -> f64 {
+        if i < 1 || i as usize + 1 >= sub.len() || head[i as usize] < full - 8.0 {
+            return 0.0;
+        }
+        head[i as usize] - head[i as usize - 1]
+    };
     let mut out: Vec<u32> = vec![];
+    let mut unconfirmed: Vec<u32> = vec![];
+    let mut hard = 0;
     for &d in drops {
         let lo = first_beat + 4 * (d as i64 - 8).max(start_bar as i64);
         let hi = first_beat + 4 * (d as i64 + 4);
-        let best = (lo..=hi).map(|i| (i, slam_at(sub, full, i))).filter(|(_, s)| *s >= 12.0).max_by(|a, b| a.1.total_cmp(&b.1));
+        let best = (lo..=hi).map(|i| (i, slam_at(bass, full, i))).filter(|(_, s)| *s >= 12.0).max_by(|a, b| a.1.total_cmp(&b.1));
         match best {
             Some((i, sc)) => {
                 let (bar, k) = place(i);
                 votes[k] += sc;
+                hard += 1;
                 out.push(bar.max(0) as u32);
             }
-            None => out.push(d),
+            None => {
+                // No break before it (an intro with a bassline drops softer):
+                // the biggest one-beat bass jump around it, else keep it as
+                // the energy curve put it, unless the track has real slams.
+                let lo = first_beat + 4 * (d as i64 - 2).max(start_bar as i64);
+                let soft = (lo..=first_beat + 4 * (d as i64 + 1))
+                    .map(|i| (i, jump(i)))
+                    .filter(|(_, j)| *j >= 8.0)
+                    .max_by(|a, b| a.1.total_cmp(&b.1));
+                match soft {
+                    Some((i, _)) => out.push(place(i).0.max(0) as u32),
+                    None => unconfirmed.push(d),
+                }
+            }
         }
     }
     for i in (first_beat + 4 * start_bar.max(2) as i64)..(first_beat + 4 * nb.saturating_sub(4) as i64) {
-        let sc = slam_at(sub, full, i);
+        let sc = slam_at(bass, full, i);
         let (bar, k) = place(i);
         if sc >= 15.0 && bar >= 0 && loud(bar as usize) && out.iter().all(|d| (*d as i64 - bar).abs() >= 12) {
             votes[k] += sc;
+            hard += 1;
             out.push(bar as u32);
         }
+    }
+    // A track whose drops slam (DnB, dubstep, most EDM) has no drop where the
+    // bass never left: those were loud bars, and a double drop timed on one
+    // landed "while the other is still building".
+    if hard < 2 {
+        out.extend(unconfirmed);
     }
     out.sort_unstable();
     let mut spaced: Vec<u32> = vec![];
@@ -681,7 +736,7 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
         (0..rms_at.len()).map(|i| if i == 0 { 0.0 } else { ((rms_at[i] + 1e-6).ln() - (rms_at[i - 1] + 1e-6).ln()).max(0.0) }).collect();
     let avg = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
     let (lm, rm) = (avg(&low_at), avg(&rise));
-    let sub = sub_db_per_beat(&sp, &beats_t, beat, low_bins);
+    let bass = Bass { sub: sub_db_per_beat(&sp, &beats_t, beat, 1.0), head: sub_db_per_beat(&sp, &beats_t, beat, 0.5) };
     let dphase = (0..4)
         .map(|p| {
             let l: Vec<f64> = low_at.iter().skip(p).step_by(4).cloned().collect();
@@ -730,7 +785,7 @@ pub fn analyze_pcm(pcm: &Pcm, bpm_range: Option<(f64, f64)>) -> Analysis {
             rms_e.iter().zip(&feats).map(|(r, f)| (0.65 * r + 0.35 * (f[3] / fmax) as f32).clamp(0.0, 1.0)).collect();
         let start_bar = rms_e.iter().position(|v| *v > 0.25).unwrap_or(0);
         let (drops, breaks) = drops_breaks(&bar_energy, start_bar);
-        let (drops, votes) = refine_drops(&drops, &sub, beat_idx(downbeat0), &bar_energy, start_bar);
+        let (drops, votes) = refine_drops(&drops, &bass, beat_idx(downbeat0), &bar_energy, start_bar);
         (feats, bar_energy, start_bar, drops, breaks, votes)
     };
     let (mut feats, mut bar_energy, mut start_bar, mut drops, mut breaks, votes) = structure(downbeat0);
@@ -902,6 +957,26 @@ pub(crate) mod tests {
         let err = ((a.downbeat0 - 1.37 % bar + bar / 2.0).rem_euclid(bar) - bar / 2.0).abs();
         assert!(err < 0.03, "downbeat {} err {}", a.downbeat0, err);
         assert!(a.grid_conf > 2.0, "grid_conf {}", a.grid_conf);
+    }
+
+    #[test]
+    fn a_bass_pushed_an_eighth_early_still_drops_on_the_one() {
+        // DnB drops often bring the sub in an eighth before the bar. The
+        // analyser used to hear that as a slam a beat early and moved the
+        // bar line, so double drops landed a beat apart.
+        let (bpm, off, rate) = (174.0, 1.37, 22_050u32);
+        let mut pcm = synth(bpm, off, &LAYOUT, rate, 1);
+        let (beat, bar) = (60.0 / bpm, 240.0 / bpm);
+        for (from, to) in [(24.0, 56.0), (80.0, 112.0)] {
+            let (s, e) = (((off + from * bar - beat / 2.0) * rate as f64) as usize, ((off + to * bar) * rate as f64) as usize);
+            for i in s..e.min(pcm.samples.len()) {
+                pcm.samples[i] += 0.35 * (2.0 * std::f32::consts::PI * 45.0 * i as f32 / rate as f32).sin();
+            }
+        }
+        let a = analyze_pcm(&pcm, Some((160.0, 180.0)));
+        assert!(a.drops.contains(&24) && a.drops.contains(&80), "drops {:?}", a.drops);
+        let err = ((a.downbeat0 - off % bar + bar / 2.0).rem_euclid(bar) - bar / 2.0).abs();
+        assert!(err < 0.03, "the bar line must stay put: downbeat {} err {err}", a.downbeat0);
     }
 
     #[test]

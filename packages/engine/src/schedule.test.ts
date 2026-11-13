@@ -4,7 +4,7 @@ import { KILL_DB, scheduleTransition, type Move } from "./schedule";
 
 const barSec = 1.379; // 174 BPM
 const barTime = (b: number) => 10 + b * barSec;
-const tr = (p: Partial<Transition>): Transition => ({ kind: "blend", fromBar: 48, len: 16, enterAt: 48, swapAt: 56, echoDiv: null, voxOut: null, loopFrom: null, loopBars: null, ...p });
+const tr = (p: Partial<Transition>): Transition => ({ kind: "blend", fromBar: 48, len: 16, enterAt: 48, swapAt: 56, echoDiv: null, voxOut: null, loopFrom: null, loopBars: null, voxInFrom: null, ...p });
 const last = (moves: Move[], side: string, target: string) => moves.filter((m) => m.side === side && m.target === target).at(-1)!;
 
 describe("scheduleTransition", () => {
@@ -88,5 +88,13 @@ describe("scheduleTransition", () => {
     const s = scheduleTransition(tr({ kind: "bassswap", swapAt: 56, voxOut: 56 }), barTime, barSec);
     expect(last(s.moves, "out", "vox")).toMatchObject({ value: 0, until: barTime(56) });
     expect(scheduleTransition(tr({ kind: "bassswap" }), barTime, barSec).moves.some((m) => m.target === "vox")).toBe(false);
+  });
+
+  it("double drop vocal hand-off: the outgoing sings first, the incoming takes over on the same bar", () => {
+    const s = scheduleTransition(tr({ kind: "double_drop", fromBar: 48, len: 32, enterAt: 48, swapAt: 64, voxOut: 72, voxInFrom: 72 }), barTime, barSec);
+    const inVox = s.moves.filter((m) => m.side === "in" && m.target === "vox");
+    expect(inVox[0]).toMatchObject({ at: barTime(48), value: 0 });
+    expect(last(s.moves, "in", "vox")).toMatchObject({ value: 1, until: barTime(72) });
+    expect(last(s.moves, "out", "vox")).toMatchObject({ value: 0, until: barTime(72) });
   });
 });

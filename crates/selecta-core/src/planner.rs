@@ -133,6 +133,11 @@ pub struct Transition {
     /// Length of that hook loop in incoming bars (4 or 8).
     #[serde(default)]
     pub loop_bars: Option<u32>,
+    /// Outgoing-track bar until which the incoming's vocal stem stays muted:
+    /// on a double drop where the outgoing is the one really singing, its
+    /// vocal leads and hands over to the incoming's here.
+    #[serde(default)]
+    pub vox_in_from: Option<u32>,
 }
 
 impl Transition {
@@ -749,8 +754,25 @@ pub fn plan(intent: &Intent, library: &[Candidate], opts: &Options) -> Result<Se
     })
 }
 
+/// Bar offset (mod 8) of a track's phrases: where most of its drops land,
+/// else where its music starts. A track with a one-bar pickup drops on bar
+/// 17, 49...: phrases counted from bar 0 put every blend a bar off.
+pub(crate) fn phrase_anchor(a: &Analysis) -> u32 {
+    let mut n = [0usize; 8];
+    for d in &a.drops {
+        n[(*d % 8) as usize] += 1;
+    }
+    let (k, c) = n.iter().enumerate().max_by_key(|x| *x.1).unwrap_or((0, &0));
+    if *c >= 2 && 2 * c > a.drops.len() {
+        k as u32
+    } else {
+        a.start_bar % 8
+    }
+}
+
 pub(crate) fn phrases(a: &Analysis, lo: u32, hi: u32) -> Vec<u32> {
-    let mut v: Vec<u32> = (a.start_bar..a.bars).step_by(8).filter(|b| (lo..=hi).contains(b)).collect();
+    let s0 = a.start_bar + (phrase_anchor(a) + 8 - a.start_bar % 8) % 8;
+    let mut v: Vec<u32> = std::iter::once(a.start_bar).chain((s0..a.bars).step_by(8)).filter(|b| (lo..=hi).contains(b)).collect();
     v.extend(a.sections.iter().map(|s| s.start).filter(|b| (lo..=hi).contains(b)));
     v.sort_unstable();
     v.dedup();
@@ -862,10 +884,6 @@ fn beds(a: &Analysis) -> Vec<u32> {
     v
 }
 
-fn pa_drops_empty(w: &Work) -> bool {
-    w.a().drops.is_empty()
-}
-
 /// Whether a track has a clear sung hook to loop (for the AI's track facts).
 pub fn has_vocal_hook(c: &Candidate) -> bool {
     vocal_hook(c).is_some()
@@ -908,6 +926,7 @@ fn place_stem_move(
         vox_out,
         loop_from: None,
         loop_bars: None,
+        vox_in_from: None,
     };
     // Acapella builds and bootlegs loop the incoming's hook when it has a
     // clear one (one vocal, in sync, repeating), rather than whatever happens
@@ -970,7 +989,9 @@ struct History {
     prev: Option<TransitionKind>,
 }
 
-fn pick_transition(p: &Work, t: &Work, compat: bool, stem_ok: bool, hist: &History, it: &Intent, rng: &mut Rng) -> TransitionKind {
+/// The genre's and the prompt's taste for each move on this pair (a prior:
+/// `script` then places each one and scores how it would actually sound).
+fn transition_weights(p: &Work, t: &Work, compat: bool, stem_ok: bool, hist: &History, it: &Intent) -> Vec<(TransitionKind, f64)> {
     let (used, prev) = (&hist.used, hist.prev);
     let chaos = it.chaos;
     let prof = p.genre.or(t.genre);
@@ -1051,7 +1072,234 @@ fn pick_transition(p: &Work, t: &Work, compat: bool, stem_ok: bool, hist: &Histo
     if p.a().drops.is_empty() || t.a().drops.is_empty() {
         weights.retain(|(k, _)| !matches!(k, TransitionKind::DoubleDrop | TransitionKind::Mashup));
     }
-    *rng.pick(&weights)
+    weights
+}
+
+/// A move placed on two tracks: the incoming's entry, the outgoing's exit.
+struct Placed {
+    in_bar: u32,
+    out_bar: u32,
+    trans: Transition,
+}
+
+fn e_at(a: &Analysis, b: u32) -> f64 {
+    a.bar_energy.get(b as usize).copied().unwrap_or(0.0) as f64
+}
+
+fn e_mean(a: &Analysis, lo: u32, hi: u32) -> f64 {
+    if hi <= lo {
+        return 0.0;
+    }
+    (lo..hi).map(|b| e_at(a, b)).sum::<f64>() / (hi - lo) as f64
+}
+
+/// Place one move on this pair's structure, or None when the material isn't there.
+/// `free` is the outgoing's first bar after its own entry move has finished:
+/// nothing may start before it.
+#[allow(clippy::too_many_arguments)]
+fn place_move(
+    kind: TransitionKind,
+    p: &Work,
+    w: &Work,
+    prev_in: u32,
+    free: u32,
+    prev_rate: f64,
+    intent: &Intent,
+    rng: &mut Rng,
+) -> Option<Placed> {
+    let (pa, a) = (p.a(), w.a());
+    let blank = |from_bar: u32, len: u32, enter_at: u32, swap_at: Option<u32>| Transition {
+        kind,
+        from_bar,
+        len,
+        enter_at,
+        swap_at,
+        echo_div: None,
+        vox_out: None,
+        loop_from: None,
+        loop_bars: None,
+        vox_in_from: None,
+    };
+    // Seconds from where the outgoing came in to bar `d`, against how long it was meant to play.
+    let target = |d: u32| ((d.saturating_sub(prev_in)) as f64 * p.bar_sec(prev_rate) - p.est_play).abs();
+    if kind.stems() {
+        return place_stem_move(kind, p, w, prev_in, prev_rate, rng).map(|(in_bar, out_bar, trans)| Placed { in_bar, out_bar, trans });
+    }
+    match kind {
+        TransitionKind::Start => None,
+        TransitionKind::DoubleDrop => {
+            // Line the drops up: the incoming enters N bars before its drop exactly
+            // N bars before the outgoing's next drop, so both hit together.
+            let idrop = a.drops.iter().cloned().find(|d| d.saturating_sub(a.start_bar) >= 8)?;
+            let od = pa
+                .drops
+                .iter()
+                .cloned()
+                .filter(|d| *d > prev_in + 16 && *d >= free + 8 && *d + 16 < pa.bars)
+                .min_by(|x, y| target(*x).total_cmp(&target(*y)))?;
+            let mut lead = 16.min(idrop - a.start_bar).min(od.saturating_sub(prev_in + 4)).min(od - free);
+            lead -= lead % 4;
+            if lead < 8 {
+                return None;
+            }
+            Some(Placed { in_bar: idrop - lead, out_bar: od + 16, trans: blank(od - lead, lead + 16, od - lead, Some(od)) })
+        }
+        TransitionKind::Blend | TransitionKind::BassSwap | TransitionKind::Filter => {
+            let mut ov = match kind {
+                TransitionKind::Blend if matches!(w.genre.map(|g| g.id), Some("techno" | "house" | "trance")) => 32,
+                TransitionKind::Filter => 8,
+                _ => 16,
+            };
+            if ov == 16 && rng.next_f64() < 0.3 {
+                ov = if kind == TransitionKind::Blend { 32 } else { 8 };
+            }
+            if intent.rapid {
+                ov = ov.min(16);
+            } else if intent.smooth && kind == TransitionKind::Blend {
+                ov = 32; // long, seamless
+            }
+            let ob = choose_out(p, prev_in, prev_rate, ov);
+            let from = (prev_in + 8).max(free).max(ob.saturating_sub(ov));
+            if from + 4 > ob {
+                return None;
+            }
+            let len = ob - from;
+            // Mix the incoming's intro over the outgoing's last phrase so its
+            // first drop lands right where the outgoing leaves: the hand-off
+            // is a drop, not the middle of someone's intro. A drop first, else
+            // any lift; a non-rapid set won't skip more than 32 bars of intro.
+            let fits = |l: &u32| *l >= a.start_bar + len && (intent.rapid || *l - len <= a.start_bar + 32) && *l + 8 < a.bars;
+            let land = a.drops.iter().cloned().find(fits).or_else(|| landings(a, len).into_iter().find(fits));
+            let in_bar = match land {
+                Some(l) => l - len,
+                // Rapid mixing skips intros: come in on the build into the first drop.
+                None if intent.rapid => a.drops.iter().cloned().find(|d| *d >= a.start_bar + 16).map(|d| d - 16).unwrap_or(a.start_bar),
+                None => a.start_bar,
+            };
+            // A bass swap on the landing is the drop itself; blends cross over midway.
+            let swap = if kind == TransitionKind::BassSwap && land.is_some() { ob } else { from + len / 2 };
+            Some(Placed { in_bar, out_bar: ob, trans: blank(from, len, from, Some(swap)) })
+        }
+        _ => {
+            // Bars the outgoing's exit move takes before the incoming lands.
+            let pre = match kind {
+                TransitionKind::EchoOut | TransitionKind::Backspin | TransitionKind::TapeStop | TransitionKind::Rewind => 1,
+                TransitionKind::LoopRoll => 2,
+                _ => 0,
+            };
+            // A cut is a drop swap: the outgoing plays its build (with a
+            // filter sweep and riser on top, see `finish`) and, right where
+            // its drop would hit, the incoming's drop hits instead. Cutting
+            // into an intro at a random phrase sounded like a skipped track.
+            let in_drop = landings(a, 8).first().copied();
+            let out_drop = pa
+                .drops
+                .iter()
+                .cloned()
+                .filter(|d| *d >= prev_in + 16 + pre && *d >= free + pre && *d + 1 < pa.bars)
+                .min_by(|x, y| target(*x).total_cmp(&target(*y)));
+            let (ib, ob) = match (in_drop, out_drop) {
+                (Some(id), Some(od)) => (id, od),
+                // No drop to swap on the outgoing: still land on the incoming's drop/hook.
+                (Some(id), None) => (id, choose_out(p, prev_in, prev_rate, 0).max(free + pre).min(pa.bars.saturating_sub(1))),
+                _ => (choose_in(w, true, intent, rng), choose_out(p, prev_in, prev_rate, 0).max(free + pre).min(pa.bars.saturating_sub(1))),
+            };
+            let mut t = blank(ob - pre, pre, ob, None);
+            t.echo_div = (kind == TransitionKind::EchoOut).then(|| [0.25, 0.5, 0.1875][(rng.next_f64() * 3.0) as usize % 3]);
+            Some(Placed { in_bar: ib, out_bar: ob, trans: t })
+        }
+    }
+}
+
+/// How a placed move would sound, from both tracks' analysis: what a DJ
+/// listens for. Roughly -2..2.
+fn quality(mv: &Placed, p: &Work, w: &Work, prev_in: u32, prev_rate: f64) -> f64 {
+    let (pa, a, t) = (p.a(), w.a(), &mv.trans);
+    // The incoming's bar while the outgoing plays bar `x`.
+    let inc = |x: u32| (mv.in_bar + x).saturating_sub(t.enter_at);
+    use TransitionKind as K;
+    // The hand-off: where the bass changes hands / the cut lands.
+    let moment = match t.kind {
+        K::Blend | K::Filter => t.from_bar + t.len,
+        k if k.beatmatched() => t.swap_at.unwrap_or(t.enter_at),
+        _ => t.enter_at,
+    };
+    let ib = inc(moment);
+    let mut q = 0.0;
+    // The incoming arrives on its drop (or at least a lift), not mid-phrase.
+    q += if a.drops.contains(&ib) {
+        1.0
+    } else if landings(a, 0).contains(&ib) {
+        0.6
+    } else if phrases(a, ib, ib).contains(&ib) {
+        0.2
+    } else {
+        0.0
+    };
+    // The outgoing hands over on its own drop (drop swap, double drop) or as its energy falls.
+    let out_drop = pa.drops.contains(&moment);
+    let falls = e_mean(pa, moment, moment + 8) < e_mean(pa, moment.saturating_sub(8), moment) - 0.1;
+    q += match t.kind {
+        K::DoubleDrop | K::Mashup => {
+            if out_drop {
+                0.6
+            } else {
+                0.0
+            }
+        }
+        // The incoming's voice over the outgoing's breakdown, its beat on the outgoing's way out.
+        K::AcapellaBuild | K::Bootleg => {
+            if falls || pa.breaks.contains(&moment) || moment >= pa.outro_bar || out_drop {
+                0.5
+            } else {
+                0.0
+            }
+        }
+        k if !k.beatmatched() => {
+            if out_drop {
+                0.5
+            } else if falls || pa.breaks.contains(&moment) {
+                0.2
+            } else {
+                0.0
+            }
+        }
+        _ => {
+            if falls || pa.breaks.contains(&moment) || moment >= pa.outro_bar {
+                0.3
+            } else {
+                0.0
+            }
+        }
+    };
+    let over: Vec<u32> = (t.enter_at..t.from_bar + t.len).collect();
+    if !over.is_empty() {
+        let n = over.len() as f64;
+        // Two full-energy sections stacked in a plain blend is mud.
+        if matches!(t.kind, K::Blend | K::Filter | K::BassSwap) {
+            let clash = over.iter().map(|x| ((e_at(pa, *x).min(e_at(a, inc(*x))) - 0.7) / 0.3).max(0.0)).sum::<f64>() / n;
+            q -= 0.5 * clash;
+        }
+        // Two singers at once (the vocal guard mutes one, but it's still a cut-off line).
+        if !t.kind.stems() {
+            let vc = over.iter().map(|x| vox(p.c, *x, x + 1).min(vox(w.c, inc(*x), inc(*x) + 1))).sum::<f64>() / n;
+            q -= 0.4 * vc;
+        }
+    }
+    // Played about as long as intended.
+    let played = moment.saturating_sub(prev_in) as f64 * p.bar_sec(prev_rate);
+    q -= 0.8 * ((played - p.est_play).abs() / p.est_play.max(1.0)).min(1.0);
+    // Entries on phrase lines, on both tracks.
+    if !phrases(pa, t.from_bar, t.from_bar).contains(&t.from_bar) && !pa.drops.contains(&t.from_bar) {
+        q -= 0.3;
+    }
+    if !phrases(a, mv.in_bar, mv.in_bar).contains(&mv.in_bar)
+        && !landings(a, 0).contains(&mv.in_bar)
+        && !a.drops.iter().any(|d| d.saturating_sub(mv.in_bar) % 4 == 0 && *d >= mv.in_bar)
+    {
+        q -= 0.3;
+    }
+    q
 }
 
 fn script(
@@ -1064,6 +1312,7 @@ fn script(
 ) -> Vec<SetTrack> {
     let mut out: Vec<SetTrack> = vec![];
     let mut tempo = 0.0;
+    let prompt_lc = intent.prompt.to_lowercase().replace('-', " ");
     for (i, w) in seq.iter().enumerate() {
         let a = w.a();
         let mut st = SetTrack {
@@ -1090,6 +1339,7 @@ fn script(
                 vox_out: None,
                 loop_from: None,
                 loop_bars: None,
+                vox_in_from: None,
             },
             est_sec: 0.0,
             fx: vec![],
@@ -1108,6 +1358,9 @@ fn script(
         let p = seq[i - 1];
         let prev_rate = out[i - 1].rate;
         let prev_in = out[i - 1].in_bar;
+        // Where the outgoing's own entry move is over, in its bars (+1 to breathe).
+        let pt = &out[i - 1].trans;
+        let free = if i >= 2 { prev_in + (pt.from_bar + pt.len).saturating_sub(pt.enter_at) + 1 } else { prev_in };
         let r = fold_ratio(tempo, a.bpm);
         // Any genre beatmatches when the tempos allow it (a hip-hop or
         // Bollywood DJ blends close tempos too); the genre only decides how
@@ -1125,146 +1378,77 @@ fn script(
         for t in &out {
             *hist.used.entry(t.trans.kind).or_default() += 1;
         }
-        let mut kind = pick_transition(p, w, compat, stem_ok, &hist, intent, rng);
+        let mut weights = transition_weights(p, w, compat, stem_ok, &hist, intent);
         // The curator's move for this pair, when the pair can support it.
-        if let Some(k) = suggested.and_then(|m| m.get(&w.c.track.id)).and_then(|s| TransitionKind::from_id(s)) {
-            let feasible = if k.stems() {
+        let wanted = suggested.and_then(|m| m.get(&w.c.track.id)).and_then(|s| TransitionKind::from_id(s)).filter(|k| {
+            if k.stems() {
                 compat && stem_ok
-            } else if k.beatmatched() {
-                compat && (k != TransitionKind::DoubleDrop || (!pa_drops_empty(p) && !a.drops.is_empty()))
             } else {
-                true
-            };
-            if feasible {
-                kind = k;
+                !k.beatmatched() || compat
+            }
+        });
+        if let Some(k) = wanted.filter(|k| !weights.iter().any(|x| x.0 == *k)) {
+            weights.push((k, 1.0));
+        }
+        // Every move the pair allows is placed on both tracks' real structure
+        // and scored on how it would sound (drop on the hand-off, phrase
+        // lines, no mud, no two singers); the genre's taste is the prior. A
+        // weighted dice roll picked double drops for tracks whose drops
+        // didn't line up and cut into intros.
+        let mut best: Option<(f64, Placed)> = None;
+        for (k, wt) in &weights {
+            if *wt <= 0.0 {
+                continue;
+            }
+            let Some(mv) = place_move(*k, p, w, prev_in, free, prev_rate, intent, rng) else { continue };
+            // One move at a time: a move starting before the previous one had
+            // finished (a 32-bar double drop followed 16 bars later by the
+            // next) made the conductor start it late and hold it, and the
+            // held double drop lost its sync.
+            if mv.trans.from_bar < free {
+                continue;
+            }
+            let q = quality(&mv, p, w, prev_in, prev_rate);
+            // A little Gumbel noise keeps near-equal options varied across seeds.
+            let noise = -(-(rng.next_f64().max(1e-9)).ln()).ln();
+            // Variety: the same move three times running stops being a move,
+            // less so when the prompt asked for it by name.
+            let recent = out.iter().rev().take(3).filter(|t| t.trans.kind == *k).count() as f64;
+            let asked = prompt_lc.contains(&k.id().replace('_', " "));
+            let score = wt.ln() + 2.5 * q + 0.3 * noise - 0.45 * recent * if asked { 0.4 } else { 1.0 }
+                + if Some(*k) == wanted { 10.0 } else { 0.0 }; // the AI's call, when the pair can do it
+            if best.as_ref().is_none_or(|b| score > b.0) {
+                best = Some((score, mv));
             }
         }
-        let pa = p.a();
-
-        if kind.stems() {
-            match place_stem_move(kind, p, w, prev_in, prev_rate, rng) {
-                Some((in_bar, out_bar, t)) => {
-                    st.in_bar = in_bar;
-                    out[i - 1].out_bar = out_bar;
-                    st.trans = t;
-                }
-                // Not the material for it (no sung phrase into a drop, no drop to ride): a plain bass swap.
-                None => kind = TransitionKind::BassSwap,
-            }
-        }
-
-        if kind == TransitionKind::DoubleDrop {
-            // Line the drops up: the incoming enters N bars before its drop exactly
-            // N bars before the outgoing's next drop, so both hit together.
-            let in_drop = a.drops.iter().cloned().find(|d| d.saturating_sub(a.start_bar) >= 8);
-            let out_drops: Vec<u32> = pa.drops.iter().cloned().filter(|d| *d > prev_in + 16).collect();
-            let done = in_drop.zip(out_drops.iter().min_by(|x, y| {
-                let dist = |d: u32| ((d - prev_in) as f64 * p.bar_sec(prev_rate) - p.est_play).abs();
-                dist(**x).partial_cmp(&dist(**y)).unwrap()
-            }));
-            match done {
-                Some((idrop, &od)) => {
-                    let mut lead = 16.min(idrop - a.start_bar).min(od.saturating_sub(prev_in + 4));
-                    lead -= lead % 4;
-                    if lead >= 8 && od + 16 < pa.bars {
-                        st.in_bar = idrop - lead;
-                        out[i - 1].out_bar = od + 16;
-                        st.trans = Transition {
-                            kind,
-                            from_bar: od - lead,
-                            len: lead + 16,
-                            enter_at: od - lead,
-                            swap_at: Some(od),
-                            echo_div: None,
-                            vox_out: None,
-                            loop_from: None,
-                            loop_bars: None,
-                        };
-                    } else {
-                        kind = TransitionKind::BassSwap;
-                    }
-                }
-                None => kind = TransitionKind::BassSwap,
-            }
-        }
-        if kind.beatmatched() && kind != TransitionKind::DoubleDrop && !kind.stems() {
-            let mut ov = match kind {
-                TransitionKind::Blend if matches!(w.genre.map(|g| g.id), Some("techno" | "house" | "trance")) => 32,
-                TransitionKind::Filter => 8,
-                _ => 16,
-            };
-            if ov == 16 && rng.next_f64() < 0.3 {
-                ov = if kind == TransitionKind::Blend { 32 } else { 8 };
-            }
-            if intent.rapid {
-                ov = ov.min(16);
-            } else if intent.smooth && kind == TransitionKind::Blend {
-                ov = 32; // long, seamless
-            }
-            // Rapid mixing skips intros: come in on the build into the first drop.
-            st.in_bar = if intent.rapid {
-                a.drops.iter().cloned().find(|d| *d >= a.start_bar + 16).map(|d| d - 16).unwrap_or(a.start_bar)
-            } else {
-                a.start_bar
-            };
-            let ob = choose_out(p, prev_in, prev_rate, ov);
-            out[i - 1].out_bar = ob;
-            let from = (prev_in + 8).max(ob.saturating_sub(ov));
-            st.trans = Transition {
-                kind,
-                from_bar: from,
-                len: ob - from,
-                enter_at: from,
-                swap_at: Some(from + (ob - from) / 2),
-                echo_div: None,
-                vox_out: None,
-                loop_from: None,
-                loop_bars: None,
-            };
-        } else if !kind.beatmatched() {
-            // Bars the outgoing's exit move takes before the incoming lands.
-            let pre = match kind {
-                TransitionKind::EchoOut | TransitionKind::Backspin | TransitionKind::TapeStop | TransitionKind::Rewind => 1,
-                TransitionKind::LoopRoll => 2,
-                _ => 0,
-            };
-            // A cut is a drop swap: the outgoing plays its build (with a
-            // filter sweep and riser on top, see `finish`) and, right where
-            // its drop would hit, the incoming's drop hits instead. Cutting
-            // into an intro at a random phrase sounded like a skipped track.
-            let target = |d: u32| ((d - prev_in) as f64 * p.bar_sec(prev_rate) - p.est_play).abs();
-            let in_drop = landings(a, 8).first().copied();
-            let out_drop = pa
-                .drops
-                .iter()
-                .cloned()
-                .filter(|d| *d >= prev_in + 16 + pre && *d + 1 < pa.bars)
-                .min_by(|x, y| target(*x).total_cmp(&target(*y)));
-            let (ib, ob) = match (in_drop, out_drop) {
-                (Some(id), Some(od)) => (id, od),
-                // No drop to swap on the outgoing: still land on the incoming's drop/hook.
-                (Some(id), None) => (id, choose_out(p, prev_in, prev_rate, 0)),
-                _ => (choose_in(w, true, intent, rng), choose_out(p, prev_in, prev_rate, 0)),
-            };
-            st.in_bar = ib;
-            out[i - 1].out_bar = ob;
-            st.trans = Transition {
-                kind,
-                from_bar: ob - pre,
-                len: pre,
-                enter_at: ob,
-                swap_at: None,
-                echo_div: (kind == TransitionKind::EchoOut).then(|| [0.25, 0.5, 0.1875][(rng.next_f64() * 3.0) as usize % 3]),
-                vox_out: None,
-                loop_from: None,
-                loop_bars: None,
-            };
-        }
+        let fallback = if compat { TransitionKind::BassSwap } else { TransitionKind::Slam };
+        let mv = match best {
+            Some((_, mv)) => mv,
+            None => place_move(fallback, p, w, prev_in, free, prev_rate, intent, rng)
+                .or_else(|| place_move(TransitionKind::Slam, p, w, prev_in, free, prev_rate, intent, rng))
+                .expect("a slam always places"),
+        };
+        let kind = mv.trans.kind;
+        st.in_bar = mv.in_bar;
+        out[i - 1].out_bar = mv.out_bar;
+        st.trans = mv.trans;
         // Vocal clash guard: one singer at a time. The outgoing's vocal goes
         // on the 4-bar phrase where the incoming first sings, if the outgoing
         // is still singing then (it used to wait for the swap, and only when
         // both sang heavily, so two vocals could overlap for 8+ bars).
-        if matches!(kind, TransitionKind::Blend | TransitionKind::BassSwap | TransitionKind::DoubleDrop | TransitionKind::Filter) {
+        // A double drop keeps a voice on top: whoever really sings their drop
+        // leads. When it's the outgoing, it carries the first 8 bars and the
+        // incoming's vocal takes over as the outgoing fades (the old guard
+        // always muted the outgoing, often for the incoming's faint chops).
+        let dd_lead = (kind == TransitionKind::DoubleDrop).then(|| {
+            let od = st.trans.swap_at.unwrap_or(st.trans.enter_at);
+            let id = st.in_bar + od - st.trans.enter_at;
+            (od, vox(p.c, od, od + 16), vox(w.c, id, id + 16))
+        });
+        if let Some((od, _, _)) = dd_lead.filter(|(_, sp, sw)| *sp >= 0.5 && *sp > sw + 0.15) {
+            st.trans.vox_out = Some(od + 8);
+            st.trans.vox_in_from = Some(od + 8);
+        } else if matches!(kind, TransitionKind::Blend | TransitionKind::BassSwap | TransitionKind::DoubleDrop | TransitionKind::Filter) {
             let t = &st.trans;
             let first_sung = (0..t.len).find(|k| vox(w.c, st.in_bar + k, st.in_bar + k + 1) >= 0.3);
             if let Some(k) = first_sung {
@@ -1593,6 +1777,85 @@ mod tests {
     }
 
     #[test]
+    fn blends_land_the_incoming_drop_on_the_hand_off() {
+        let lib = library();
+        let it = intent::parse("smooth rolling drum and bass 40 min", &[]);
+        let mut seen = 0;
+        for seed in 0..6 {
+            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: true }).unwrap();
+            for t in &p.tracks[1..] {
+                let tr = &t.trans;
+                if !matches!(tr.kind, TransitionKind::Blend | TransitionKind::BassSwap | TransitionKind::Filter) {
+                    continue;
+                }
+                let a = &lib.iter().find(|c| c.track.id == t.id).unwrap().analysis;
+                let Some(d) = a.drops.iter().find(|d| **d >= a.start_bar + tr.len && **d - tr.len <= a.start_bar + 32) else { continue };
+                seen += 1;
+                assert_eq!(t.in_bar + tr.len, *d, "{}: its drop should hit as the outgoing leaves: {tr:?}", t.title);
+                if tr.kind == TransitionKind::BassSwap {
+                    assert_eq!(tr.swap_at, Some(tr.from_bar + tr.len), "the bass swaps on that drop");
+                }
+            }
+        }
+        assert!(seen > 0, "no blends to check");
+    }
+
+    #[test]
+    fn one_move_at_a_time() {
+        // A move may not start before the one into the outgoing has finished.
+        let lib = library();
+        for prompt in ["hedex style rapid fire dnb, double drops 20 min", "crazy dnb mashups 30 min", "smooth house and dnb 40 min"] {
+            let it = intent::parse(prompt, &[]);
+            for seed in 0..6 {
+                let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: true }).unwrap();
+                for i in 2..p.tracks.len() {
+                    let (prev, t) = (&p.tracks[i - 1], &p.tracks[i].trans);
+                    let busy_until = prev.in_bar + (prev.trans.from_bar + prev.trans.len).saturating_sub(prev.trans.enter_at);
+                    assert!(
+                        t.from_bar >= busy_until,
+                        "{prompt} #{seed}: {} starts at {} while the move into {} runs to {busy_until}",
+                        p.tracks[i].title,
+                        t.from_bar,
+                        prev.title
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn double_drops_carry_a_voice() {
+        // Instrumental drops, a sung break: every double drop needs a voice on
+        // top, so a sung hook from elsewhere loops over both drops.
+        let lib: Vec<Candidate> = dnb_keyed()
+            .into_iter()
+            .map(|mut c| {
+                c.vocals = Some((0..c.analysis.bars).map(|b| if (56..72).contains(&b) { 0.9 } else { 0.0 }).collect());
+                c
+            })
+            .collect();
+        let it = intent::parse("hedex style rapid fire dnb, double drops 20 min", &[]);
+        let mut dd = 0;
+        for seed in 0..8 {
+            let p = plan(&it, &lib, &Options { seed, exclude: vec![], curation: None, keylock: true }).unwrap();
+            for i in 1..p.tracks.len() {
+                let t = &p.tracks[i];
+                if t.trans.kind != TransitionKind::DoubleDrop {
+                    continue;
+                }
+                dd += 1;
+                let drop = t.trans.swap_at.unwrap();
+                let host = &p.tracks[i - 1];
+                let l = host.layers.iter().find(|l| l.over_mix).unwrap_or_else(|| panic!("no voice over the double drop into {}", t.title));
+                assert_eq!(l.part, crate::layers::LayerPart::Vocal);
+                assert_eq!(l.from_bar, drop, "the hook comes in with both drops");
+                assert!(l.id != host.id && l.id != t.id, "from a third track");
+            }
+        }
+        assert!(dd > 0, "no double drops planned");
+    }
+
+    #[test]
     fn layer_tempo_and_key_fits() {
         use crate::layers::{fit_tempo, LayerPart};
         assert!(fit_tempo(172.0, 174.0, LayerPart::Riff).is_some());
@@ -1657,7 +1920,15 @@ mod tests {
 
     #[test]
     fn cuts_are_drop_swaps_with_a_build() {
-        let lib = library();
+        // Grids too shaky to beatmatch: every move is a cut, the case under test
+        // (on mixable pairs the scored moves rightly prefer drop-on-drop blends).
+        let lib: Vec<Candidate> = library()
+            .into_iter()
+            .map(|mut c| {
+                c.analysis.grid_conf = 1.5;
+                c
+            })
+            .collect();
         let mut it = intent::parse("hedex style rapid fire dnb 20 min", &[]);
         it.rapid = true;
         let mut cuts = 0;

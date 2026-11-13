@@ -159,7 +159,7 @@ export class Conductor {
     const cur = plan.tracks[this.index]!;
     const next = plan.tracks[this.index + 1]!;
     cur.outBar = b + 1;
-    next.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null, loopFrom: null, loopBars: null };
+    next.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null, loopFrom: null, loopBars: null, voxInFrom: null };
   }
 
   private prepare(i: number): Promise<LoadedTrack> {
@@ -267,7 +267,8 @@ export class Conductor {
     if (vocal) {
       moves.push({ side: "in", target: "inst", at: t0, value: 0 });
       moves.push({ side: "in", target: "hp", at: t0, value: 1800 }, { side: "in", target: "hp", at: t0, value: 120, until: t0 + hostBeat });
-      moves.push({ side: "in", target: "fader", at: t0, value: 0.9 });
+      // Over a double drop it sings over two full drops: a touch louder.
+      moves.push({ side: "in", target: "fader", at: t0, value: l.overMix ? 1 : 0.9 });
     } else {
       if (d.hasStems) moves.push({ side: "in", target: "vox", at: t0, value: 0 });
       // A riff is a bass swap: the loop brings its bass and mids, the host
@@ -294,7 +295,28 @@ export class Conductor {
           { side: "out", target: "low", at: t1, value: 0 },
         ];
     host.automate(hostMoves);
+    // Over a double drop both decks are playing: the incoming makes room too.
+    const other = l.overMix && this.pending?.out === host ? this.pending.inn : null;
+    if (vocal && other?.hasStems) other.automate(hostMoves.filter((m) => m.target === "vox"));
     this.host.onEvent?.({ type: "layer", index, deck: d.id as LayerDeckId, layer: l });
+  }
+
+  /** Other songs' loops over the playing track, scheduled like its cues. */
+  private scheduleLayers(cur: SetTrack, live: Deck, now: number): void {
+    const audio = this.layerAudio.get(cur);
+    cur.layers?.forEach((l, k) => {
+      const key = `${this.index}:L${k}`;
+      if (this.fired.has(key)) return;
+      const t0 = live.timeOfBar(l.fromBar);
+      if (t0 - now > LOOKAHEAD) return;
+      this.fired.add(key);
+      const got = audio?.[k];
+      if (t0 < now - 0.05 || !got) {
+        if (got === undefined) this.host.onEvent?.({ type: "error", message: `${l.title} loop wasn't ready in time; skipped it.` });
+        return;
+      }
+      this.playLayer(this.index, live, l, got, t0, live.timeOfBar(l.toBar));
+    });
   }
 
   private tick(): void {
@@ -302,6 +324,10 @@ export class Conductor {
     const live = this.live;
     if (!plan || !live?.track) return;
     const now = this.engine.ctx.currentTime;
+
+    // Layers on the playing track, also while a transition runs: a loop
+    // over a double drop starts after the next track has come in.
+    this.scheduleLayers(plan.tracks[this.index]!, live, now);
 
     if (this.pending) {
       const p = this.pending;
@@ -331,21 +357,6 @@ export class Conductor {
       if (t < now - 0.05) return; // missed (e.g. after a seek): skip rather than fire late
       if (fire(this.fx, cue.fx, { deck: live, at: t, beats: cue.beats })) this.host.onEvent?.({ type: "fx", index: this.index, fx: cue.fx, reason: cue.reason });
     });
-    // Layers: other songs' loops over this track, scheduled like its cues.
-    const audio = this.layerAudio.get(cur);
-    cur.layers?.forEach((l, k) => {
-      const key = `${this.index}:L${k}`;
-      if (this.fired.has(key)) return;
-      const t0 = live.timeOfBar(l.fromBar);
-      if (t0 - now > LOOKAHEAD) return;
-      this.fired.add(key);
-      const got = audio?.[k];
-      if (t0 < now - 0.05 || !got) {
-        if (got === undefined) this.host.onEvent?.({ type: "error", message: `${l.title} loop wasn't ready in time; skipped it.` });
-        return;
-      }
-      this.playLayer(this.index, live, l, got, t0, live.timeOfBar(l.toBar));
-    });
     const next = plan.tracks[this.index + 1];
     if (!next) {
       if (!this.ending && live.timeOfBar(cur.outBar) - now < LOOKAHEAD) this.finish(live, cur);
@@ -366,7 +377,7 @@ export class Conductor {
       if (after) {
         const b = Math.ceil((live.bar() + 4) / 4) * 4;
         cur.outBar = b + 1;
-        after.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null, loopFrom: null, loopBars: null };
+        after.trans = { kind: "echo_out", fromBar: b, len: 1, enterAt: b + 1, swapAt: null, echoDiv: 0.25, voxOut: null, loopFrom: null, loopBars: null, voxInFrom: null };
         void this.prepare(this.index + 1).catch(() => {});
       }
       return;
@@ -380,10 +391,26 @@ export class Conductor {
     });
     // Not decoded in time: give the current track another phrase rather than cut early.
     if (tFrom - now < 0.25) {
-      for (const k of ["fromBar", "enterAt"] as const) next.trans[k] += 8;
-      if (next.trans.swapAt !== null) next.trans.swapAt += 8;
-      if (next.trans.voxOut != null) next.trans.voxOut += 8;
-      cur.outBar += 8;
+      const tr = next.trans;
+      // A drop-on-drop move waits for the outgoing's *next* drop, so both
+      // drops still hit together. Pushing it 8 bars landed the incoming's
+      // drop in the middle of the outgoing's (heard as "out of sync").
+      let by = 8;
+      if ((tr.kind === "double_drop" || tr.kind === "mashup") && tr.swapAt !== null) {
+        const swap = tr.swapAt;
+        const bars = live.track.analysis.bars;
+        const d = live.track.analysis.drops.find((x) => x >= swap + 8 && x <= swap + 48 && x + 16 < bars);
+        if (d !== undefined) by = d - swap;
+        else next.trans = { ...tr, kind: "bassswap" };
+        // Its loop over the double drop moves with it.
+        for (const l of cur.layers ?? []) if (l.overMix && l.fromBar >= swap) Object.assign(l, { fromBar: l.fromBar + by, toBar: l.toBar + by });
+      }
+      const t = next.trans;
+      for (const k of ["fromBar", "enterAt"] as const) t[k] += by;
+      if (t.swapAt !== null) t.swapAt += by;
+      if (t.voxOut != null) t.voxOut += by;
+      if (t.voxInFrom != null) t.voxInFrom += by;
+      cur.outBar += by;
       // About to run out of track while waiting: hold the current phrase in
       // a 4-bar loop on the grid (as a DJ would) instead of playing into silence.
       const bars = live.track.analysis.bars;
@@ -457,10 +484,12 @@ export class Conductor {
     if (stemMove || trans.kind === "mashup") this.buildInto(out, sched.handoverAt);
     out.stop(sched.outEndsAt + 0.05);
     this.pending = { out, inn, index, sched, handedOver: false };
-    // Start preparing the track after this one now, not when this transition
-    // ends: decoding, stems and the keylock render can take 10-35 s, and a
-    // long mashup can end seconds before the next move is due.
-    void this.prepare(index + 1).catch(() => {});
+    // Start preparing the tracks after this one now, two ahead: decoding,
+    // stems and the keylock render can take 10-35 s, and in a rapid set the
+    // next move can be due ~25 s after this one (measured: 7 holds in a
+    // 9-minute set preparing one ahead, and a held double drop lost its sync).
+    const ahead = this.prepare(index + 1);
+    void ahead.then(() => this.prepare(index + 2)).catch(() => {});
     this.host.onEvent?.({ type: "transition", index, deck: ab(inn), kind: trans.kind, rate });
   }
 

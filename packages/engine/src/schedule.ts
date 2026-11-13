@@ -57,6 +57,15 @@ export function scheduleTransition(t: Transition, barTime: (bar: number) => numb
     m("out", "vox", tv - beatSec / 2, 0, tv);
   }
 
+  // ...and the incoming's vocal waits for its turn (a double drop where the
+  // outgoing sings: its vocal leads, then hands over here).
+  if (t.voxInFrom !== null && t.voxInFrom !== undefined) {
+    const tv = barTime(t.voxInFrom);
+    m("in", "vox", tEnter, 0);
+    m("in", "vox", tv - beatSec / 2, 0);
+    m("in", "vox", tv - beatSec / 2, 1, tv);
+  }
+
   switch (t.kind) {
     case "blend":
     case "bassswap":

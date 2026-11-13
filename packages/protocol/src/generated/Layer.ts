@@ -22,4 +22,9 @@ beatRatio: number,
 /**
  * Semitones the source is shifted to sit in the host's key.
  */
-keyShift: number, reason: string, };
+keyShift: number, reason: string, 
+/**
+ * Rides a transition (a double drop) rather than one track's solo
+ * bars: both decks' vocals make room for it.
+ */
+overMix: boolean, };
