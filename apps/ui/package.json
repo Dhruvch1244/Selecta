@@ -29,7 +29,7 @@
     "@radix-ui/react-tooltip": "^1.4.1",
     "@selecta/engine": "*",
     "@selecta/protocol": "*",
-    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
