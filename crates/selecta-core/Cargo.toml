@@ -13,5 +13,5 @@ ts-rs.workspace = true
 rustfft = "6"
 symphonia = { version = "0.6", features = ["all"] }
 lofty = "0.25"
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 rayon = "1"
